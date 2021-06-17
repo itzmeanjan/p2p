@@ -7,8 +7,9 @@ import (
 )
 
 type Msg struct {
-	Id   uint8   `json:"id"`
-	Hops []uint8 `json:"hops"`
+	Id     uint8    `json:"id"`
+	Author string   `json:"author"`
+	Hops   []string `json:"hops"`
 }
 
 func (m *Msg) read(r io.Reader) (int, error) {
