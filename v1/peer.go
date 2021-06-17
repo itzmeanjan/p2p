@@ -29,6 +29,23 @@ func (p *Peer) Add(conn net.Conn, notifier chan *Msg) bool {
 	return false
 }
 
+func (p *Peer) Forward(msg *Msg) {
+	for peer, ping := range p.Peers {
+		addr := peer.RemoteAddr().String()
+		forward := false
+		for _, hop := range msg.Hops {
+			if addr != hop {
+				forward = true
+				break
+			}
+		}
+
+		if forward {
+			ping <- msg
+		}
+	}
+}
+
 func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 	done <- struct{}{}
 
@@ -104,6 +121,8 @@ func (p *Peer) read(ctx context.Context, rw *bufio.ReadWriter, health chan struc
 				log.Printf("Failed to read : %s\n", err.Error())
 				return
 			}
+
+			p.Forward(msg)
 		}
 	}
 }
