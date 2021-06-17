@@ -3,17 +3,24 @@ package v1
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
 )
 
 type Peer struct {
-	Id     uint8
-	Addr   string
-	Target map[string]bool
-	Peers  map[net.Conn]chan *Msg
-	Lock   *sync.RWMutex
+	Id        uint8
+	Addr      string
+	Target    map[string]bool
+	Peers     map[net.Conn]chan *Msg
+	Lock      *sync.RWMutex
+	Queue     []*Msg
+	QueueLock *sync.RWMutex
+	Log       bool
+	Logger    io.Writer
 }
 
 func (p *Peer) Add(conn net.Conn, notifier chan *Msg) bool {
@@ -43,6 +50,21 @@ func (p *Peer) Forward(msg *Msg) {
 		if forward {
 			ping <- msg
 		}
+	}
+}
+
+func (p *Peer) Enqueue(msg *Msg) {
+	p.QueueLock.Lock()
+	defer p.QueueLock.Unlock()
+
+	p.Queue = append(p.Queue, msg)
+	if p.Log {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("Failed to serialise : %s\n", err.Error())
+			return
+		}
+		p.Logger.Write([]byte(fmt.Sprintf("%s\n", data)))
 	}
 }
 
@@ -123,6 +145,7 @@ func (p *Peer) read(ctx context.Context, rw *bufio.ReadWriter, health chan struc
 			}
 
 			p.Forward(msg)
+			p.Enqueue(msg)
 		}
 	}
 }
