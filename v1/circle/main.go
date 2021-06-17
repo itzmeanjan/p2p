@@ -14,7 +14,7 @@ import (
 )
 
 type Info struct {
-	Id   uint8
+	Id   uint32
 	Addr string
 }
 
@@ -22,7 +22,7 @@ func generatePeers(total int) *ring.Ring {
 	r := ring.New(total)
 	for i := 0; i < r.Len(); i++ {
 		r.Value = &Info{
-			Id:   uint8(i),
+			Id:   uint32(i),
 			Addr: fmt.Sprintf("127.0.0.1:700%d", i),
 		}
 		r = r.Next()
@@ -32,17 +32,18 @@ func generatePeers(total int) *ring.Ring {
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	total := 5
+	total := 3
 	peers := make([]*v1.Peer, 0, total)
 	r := generatePeers(total)
 	for i := 0; i < total; i++ {
 		prv := r.Prev().Value.(*Info)
+		cur := r.Value.(*Info)
 		nxt := r.Next().Value.(*Info)
-		peer, err := v1.New(ctx, uint8(i), fmt.Sprintf("127.0.0.1:700%d", i),
-			map[uint8]string{
+		peer, err := v1.New(ctx, cur.Id, cur.Addr,
+			map[uint32]string{
 				prv.Id: prv.Addr,
 				nxt.Id: nxt.Addr,
-			}, false)
+			}, true)
 		if err != nil {
 			log.Printf("Failed to start peer %d : %s\n", i, err.Error())
 			return

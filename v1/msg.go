@@ -9,8 +9,8 @@ import (
 )
 
 type Msg struct {
-	Id   uint8   `json:"id"`
-	Hops []uint8 `json:"hops"`
+	Id   uint32   `json:"id"`
+	Hops []uint32 `json:"hops"`
 }
 
 func (m *Msg) read(rw *bufio.ReadWriter) (int, error) {
@@ -27,7 +27,14 @@ func (m *Msg) read(rw *bufio.ReadWriter) (int, error) {
 		return 4, err
 	}
 
-	return n + 4, json.Unmarshal(buf, &m)
+	if err := json.Unmarshal(buf, &m); err != nil {
+		return n + 4, err
+	}
+
+	if m == nil {
+		m.Hops = make([]uint32, 0)
+	}
+	return n + 4, nil
 }
 
 func (m *Msg) write(rw *bufio.ReadWriter) (int, error) {
