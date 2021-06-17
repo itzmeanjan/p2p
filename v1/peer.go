@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 )
 
@@ -21,6 +22,32 @@ type Peer struct {
 	QueueLock *sync.RWMutex
 	Log       bool
 	Logger    io.Writer
+}
+
+func New(ctx context.Context, id uint8, addr string, target map[string]struct{}, keepLog bool) (*Peer, error) {
+	peer := Peer{
+		Id:        id,
+		Addr:      addr,
+		Target:    target,
+		Peers:     make(map[net.Conn]chan *Msg),
+		Lock:      &sync.RWMutex{},
+		Queue:     make([]*Msg, 0),
+		QueueLock: &sync.RWMutex{},
+		Log:       keepLog,
+	}
+
+	if keepLog {
+		fd, err := os.OpenFile(fmt.Sprintf("%d.txt", peer.Id), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		peer.Logger = fd
+	}
+	done := make(chan struct{})
+	go peer.Server(ctx, done)
+	<-done
+
+	return &peer, nil
 }
 
 func (p *Peer) Add(conn net.Conn, notifier chan *Msg) bool {
@@ -96,8 +123,8 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 			if !p.Add(conn, notifier) {
 				if err := conn.Close(); err != nil {
 					log.Printf("Connection already established with peer : %s\n", err.Error())
-					break OUT
 				}
+				break OUT
 			}
 
 			go p.handleConnection(ctx, conn, notifier)
@@ -135,8 +162,8 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 			if !p.Add(conn, notifier) {
 				if err := conn.Close(); err != nil {
 					log.Printf("Connection already established with peer : %s\n", err.Error())
-					break OUT
 				}
+				break OUT
 			}
 
 			go p.handleConnection(ctx, conn, notifier)
