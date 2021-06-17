@@ -3,6 +3,7 @@ package v1
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,8 +16,8 @@ import (
 type Peer struct {
 	Id        uint8
 	Addr      string
-	Target    map[string]struct{}
-	Peers     map[net.Conn]chan *Msg
+	Target    map[uint8]string
+	Peers     map[net.Conn]*PeerInfo
 	Lock      *sync.RWMutex
 	Queue     []*Msg
 	QueueLock *sync.RWMutex
@@ -24,12 +25,17 @@ type Peer struct {
 	Logger    io.Writer
 }
 
-func New(ctx context.Context, id uint8, addr string, target map[string]struct{}, keepLog bool) (*Peer, error) {
+type PeerInfo struct {
+	Id   uint8
+	Ping chan *Msg
+}
+
+func New(ctx context.Context, id uint8, addr string, target map[uint8]string, keepLog bool) (*Peer, error) {
 	peer := Peer{
 		Id:        id,
 		Addr:      addr,
 		Target:    target,
-		Peers:     make(map[net.Conn]chan *Msg),
+		Peers:     make(map[net.Conn]*PeerInfo),
 		Lock:      &sync.RWMutex{},
 		Queue:     make([]*Msg, 0),
 		QueueLock: &sync.RWMutex{},
@@ -50,32 +56,30 @@ func New(ctx context.Context, id uint8, addr string, target map[string]struct{},
 	return &peer, nil
 }
 
-func (p *Peer) Add(conn net.Conn, notifier chan *Msg) bool {
+func (p *Peer) Add(conn net.Conn, id uint8, notifier chan *Msg) bool {
 	p.Lock.Lock()
 	defer p.Lock.Unlock()
 
-	addr := conn.RemoteAddr().String()
-	if _, ok := p.Target[addr]; ok {
-		p.Peers[conn] = notifier
-		delete(p.Target, addr)
+	if _, ok := p.Target[id]; ok {
+		p.Peers[conn] = &PeerInfo{Id: id, Ping: notifier}
+		delete(p.Target, id)
 		return true
 	}
 	return false
 }
 
 func (p *Peer) Forward(msg *Msg) {
-	for peer, ping := range p.Peers {
-		addr := peer.RemoteAddr().String()
+	for _, info := range p.Peers {
 		forward := false
 		for _, hop := range msg.Hops {
-			if addr != hop {
+			if info.Id != hop {
 				forward = true
 				break
 			}
 		}
 
 		if forward {
-			ping <- msg
+			info.Ping <- msg
 		}
 	}
 }
@@ -109,25 +113,39 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 			if len(p.Target) == 0 {
 				return
 			}
-			var addr string
-			for target := range p.Target {
-				addr = target
+			var (
+				id   uint8
+				addr string
+			)
+			for key, val := range p.Target {
+				id = key
+				addr = val
 			}
 			p.Lock.RUnlock()
 
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
-				break OUT
-			}
-			notifier := make(chan *Msg)
-			if !p.Add(conn, notifier) {
-				if err := conn.Close(); err != nil {
-					log.Printf("Connection already established with peer : %s\n", err.Error())
-				}
+				log.Printf("Failed to connect : %s\n", err.Error())
 				break OUT
 			}
 
-			go p.handleConnection(ctx, conn, notifier)
+			// Writing peer id to stream
+			if err := binary.Write(conn, binary.BigEndian, uint8(p.Id)); err != nil {
+				log.Printf("Failed to send id : %s\n", err.Error())
+				break OUT
+			}
+
+			notifier := make(chan *Msg)
+			if !p.Add(conn, id, notifier) {
+				if err := conn.Close(); err != nil {
+					log.Printf("Failed to tear down : %s\n", err.Error())
+				}
+				log.Printf("[%d] Connection already established : %d\n", p.Id, id)
+				break OUT
+			}
+
+			log.Printf("[%d] Connected to : %d\n", p.Id, id)
+			go p.handleConnection(ctx, id, conn, notifier)
 		}
 	}
 }
@@ -158,20 +176,32 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 				log.Printf("Listener failed : %s\n", err.Error())
 				return
 			}
-			notifier := make(chan *Msg)
-			if !p.Add(conn, notifier) {
+
+			var id uint8
+			if err := binary.Read(conn, binary.BigEndian, &id); err != nil {
+				log.Printf("Failed to read id : %s\n", err.Error())
+
 				if err := conn.Close(); err != nil {
-					log.Printf("Connection already established with peer : %s\n", err.Error())
+					log.Printf("Failed to tear down : %s\n", err.Error())
 				}
 				break OUT
 			}
+			notifier := make(chan *Msg)
+			if !p.Add(conn, id, notifier) {
+				if err := conn.Close(); err != nil {
+					log.Printf("Failed to tear down : %s\n", err.Error())
+				}
+				log.Printf("[%d] Connection already established : %d\n", p.Id, id)
+				break OUT
+			}
 
-			go p.handleConnection(ctx, conn, notifier)
+			log.Printf("[%d] Accepted connection : %d\n", p.Id, id)
+			go p.handleConnection(ctx, id, conn, notifier)
 		}
 	}
 }
 
-func (p *Peer) handleConnection(ctx context.Context, conn net.Conn, notifier chan *Msg) {
+func (p *Peer) handleConnection(ctx context.Context, id uint8, conn net.Conn, notifier chan *Msg) {
 	defer func() {
 		if err := conn.Close(); err != nil {
 			log.Printf("Failed to close connection : %s\n", err.Error())
@@ -180,8 +210,8 @@ func (p *Peer) handleConnection(ctx context.Context, conn net.Conn, notifier cha
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	health := make(chan struct{}, 2)
-	go p.read(ctx, rw, health)
-	go p.write(ctx, rw, health, notifier)
+	go p.read(ctx, id, rw, health)
+	go p.write(ctx, id, rw, health, notifier)
 
 	select {
 	case <-ctx.Done():
@@ -191,7 +221,7 @@ func (p *Peer) handleConnection(ctx context.Context, conn net.Conn, notifier cha
 	}
 }
 
-func (p *Peer) read(ctx context.Context, rw *bufio.ReadWriter, health chan struct{}) {
+func (p *Peer) read(ctx context.Context, id uint8, rw *bufio.ReadWriter, health chan struct{}) {
 	defer func() {
 		health <- struct{}{}
 	}()
@@ -204,30 +234,28 @@ func (p *Peer) read(ctx context.Context, rw *bufio.ReadWriter, health chan struc
 		default:
 			msg := new(Msg)
 			if _, err := msg.read(rw); err != nil {
-				log.Printf("Failed to read : %s\n", err.Error())
+				log.Printf("[%d] Failed to read : %s [%d]\n", p.Id, err.Error(), id)
 				return
 			}
 
+			log.Printf("[%d] Received message : %d\n", p.Id, id)
 			p.Forward(msg)
 			p.Enqueue(msg)
 		}
 	}
 }
 
-func (p *Peer) write(ctx context.Context, rw *bufio.ReadWriter, health chan struct{}, notifier chan *Msg) {
+func (p *Peer) write(ctx context.Context, id uint8, rw *bufio.ReadWriter, health chan struct{}, notifier chan *Msg) {
 	defer func() {
 		health <- struct{}{}
 	}()
 
-	msg := Msg{Id: p.Id, Author: p.Addr}
+	msg := Msg{Id: p.Id}
 	if _, err := msg.write(rw); err != nil {
-		log.Printf("Failed to write own message : %s\n", err.Error())
+		log.Printf("[%d] Failed to write own message : %s [%d]\n", p.Id, err.Error(), id)
 		return
 	}
-	if err := rw.Flush(); err != nil {
-		log.Printf("Failed to flush : %s\n", err.Error())
-		return
-	}
+	log.Printf("[%d] Sent own message : %d\n", p.Id, id)
 
 	for {
 		select {
@@ -235,15 +263,12 @@ func (p *Peer) write(ctx context.Context, rw *bufio.ReadWriter, health chan stru
 			return
 
 		case msg := <-notifier:
-			msg.Hops = append(msg.Hops, p.Addr)
+			msg.Hops = append(msg.Hops, id)
 			if _, err := msg.write(rw); err != nil {
-				log.Printf("Failed to write message : %s\n", err.Error())
+				log.Printf("[%d] Failed to write message : %s [%d]\n", p.Id, err.Error(), id)
 				return
 			}
-			if err := rw.Flush(); err != nil {
-				log.Printf("Failed to flush : %s\n", err.Error())
-				return
-			}
+			log.Printf("[%d] Forwarded message : %d\n", p.Id, id)
 		}
 	}
 }
