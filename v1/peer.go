@@ -14,7 +14,7 @@ import (
 type Peer struct {
 	Id        uint8
 	Addr      string
-	Target    map[string]bool
+	Target    map[string]struct{}
 	Peers     map[net.Conn]chan *Msg
 	Lock      *sync.RWMutex
 	Queue     []*Msg
@@ -68,6 +68,43 @@ func (p *Peer) Enqueue(msg *Msg) {
 	}
 }
 
+func (p *Peer) Client(ctx context.Context, done chan struct{}) {
+	done <- struct{}{}
+
+	for {
+	OUT:
+		select {
+		case <-ctx.Done():
+			return
+
+		default:
+			p.Lock.RLock()
+			if len(p.Target) == 0 {
+				return
+			}
+			var addr string
+			for target := range p.Target {
+				addr = target
+			}
+			p.Lock.RUnlock()
+
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				break OUT
+			}
+			notifier := make(chan *Msg)
+			if !p.Add(conn, notifier) {
+				if err := conn.Close(); err != nil {
+					log.Printf("Connection already established with peer : %s\n", err.Error())
+					break OUT
+				}
+			}
+
+			go p.handleConnection(ctx, conn, notifier)
+		}
+	}
+}
+
 func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 	done <- struct{}{}
 
@@ -83,7 +120,7 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 	}()
 
 	for {
-	ROLL:
+	OUT:
 		select {
 		case <-ctx.Done():
 			return
@@ -98,7 +135,7 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 			if !p.Add(conn, notifier) {
 				if err := conn.Close(); err != nil {
 					log.Printf("Connection already established with peer : %s\n", err.Error())
-					break ROLL
+					break OUT
 				}
 			}
 
