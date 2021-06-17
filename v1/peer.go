@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"bufio"
 	"context"
 	"log"
 	"net"
@@ -64,4 +65,60 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 		}
 	}
 
+}
+
+func (p *Peer) handleConnection(ctx context.Context, conn net.Conn) {
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Failed to close connection : %s\n", err.Error())
+		}
+	}()
+
+	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	health := make(chan struct{})
+	go p.read(ctx, rw, health)
+	go p.write(ctx, rw, health)
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-health:
+		return
+	}
+}
+
+func (p *Peer) read(ctx context.Context, rw *bufio.ReadWriter, health chan struct{}) {
+	defer func() {
+		health <- struct{}{}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		default:
+			msg := new(Msg)
+			if _, err := msg.read(rw); err != nil {
+				log.Printf("Failed to read : %s\n", err.Error())
+				return
+			}
+		}
+	}
+}
+
+func (p *Peer) write(ctx context.Context, rw *bufio.ReadWriter, health chan struct{}) {
+	defer func() {
+		health <- struct{}{}
+	}()
+
+	msg := Msg{Id: p.Id, Hops: []uint8{p.Id}}
+	if _, err := msg.write(rw); err != nil {
+		log.Printf("Failed to write own message : %s\n", err.Error())
+		return
+	}
+	if err := rw.Flush(); err != nil {
+		log.Printf("Failed to flush : %s\n", err.Error())
+		return
+	}
 }
