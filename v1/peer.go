@@ -13,32 +13,35 @@ import (
 )
 
 type Peer struct {
-	Id        uint32
-	Addr      string
-	Target    map[uint32]string
-	Peers     map[net.Conn]*PeerInfo
-	Lock      *sync.RWMutex
-	Queue     []*Msg
-	QueueLock *sync.RWMutex
-	Log       bool
-	Logger    *os.File
+	Id         uint32
+	Addr       string
+	Target     map[uint32]string
+	Peers      map[net.Conn]*PeerInfo
+	Lock       *sync.RWMutex
+	Queue      []*Msg
+	QueueLock  *sync.RWMutex
+	Log        bool
+	Logger     *os.File
+	PingClient chan struct{}
 }
 
 type PeerInfo struct {
 	Id   uint32
+	Addr string
 	Ping chan *Msg
 }
 
 func New(ctx context.Context, id uint32, addr string, target map[uint32]string, keepLog bool) (*Peer, error) {
 	peer := Peer{
-		Id:        id,
-		Addr:      addr,
-		Target:    target,
-		Peers:     make(map[net.Conn]*PeerInfo),
-		Lock:      &sync.RWMutex{},
-		Queue:     make([]*Msg, 0),
-		QueueLock: &sync.RWMutex{},
-		Log:       keepLog,
+		Id:         id,
+		Addr:       addr,
+		Target:     target,
+		Peers:      make(map[net.Conn]*PeerInfo),
+		Lock:       &sync.RWMutex{},
+		Queue:      make([]*Msg, 0),
+		QueueLock:  &sync.RWMutex{},
+		Log:        keepLog,
+		PingClient: make(chan struct{}, len(target)),
 	}
 
 	if keepLog {
@@ -53,9 +56,14 @@ func New(ctx context.Context, id uint32, addr string, target map[uint32]string, 
 	go peer.Server(ctx, done)
 	<-done
 
+	for range target {
+		peer.PingClient <- struct{}{}
+	}
 	return &peer, nil
 }
 
+// Run a go-routine, used for listening to context cancellation signal
+// and on reception closes log file handler --- part of graceful shutdown
 func (p *Peer) LogHandler(ctx context.Context) {
 	<-ctx.Done()
 	if p.Log {
@@ -65,18 +73,33 @@ func (p *Peer) LogHandler(ctx context.Context) {
 	}
 }
 
+// Invoked when peer has established connection with another peer
 func (p *Peer) Add(conn net.Conn, id uint32, notifier chan *Msg) bool {
 	p.Lock.Lock()
 	defer p.Lock.Unlock()
 
 	if _, ok := p.Target[id]; ok {
-		p.Peers[conn] = &PeerInfo{Id: id, Ping: notifier}
+		p.Peers[conn] = &PeerInfo{Id: id, Ping: notifier, Addr: p.Target[id]}
 		delete(p.Target, id)
 		return true
 	}
 	return false
 }
 
+// Invoked by connection handler method when connection is about to be terminated
+// for removing peer from this peer's connected set
+func (p *Peer) Remove(conn net.Conn) {
+	p.Lock.Lock()
+	defer p.Lock.Unlock()
+
+	if info, ok := p.Peers[conn]; ok {
+		p.Target[info.Id] = info.Addr
+		delete(p.Peers, conn)
+		p.PingClient <- struct{}{}
+	}
+}
+
+// See if this message need to be forwarded to any another peers
 func (p *Peer) Forward(msg *Msg) {
 	if msg.Id == p.Id {
 		return
@@ -97,6 +120,8 @@ func (p *Peer) Forward(msg *Msg) {
 	}
 }
 
+// Enqueues newly received message, also appends to logs file
+// when necessary
 func (p *Peer) Enqueue(msg *Msg) {
 	p.QueueLock.Lock()
 	defer p.QueueLock.Unlock()
@@ -121,7 +146,7 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			return
 
-		default:
+		case <-p.PingClient:
 			p.Lock.RLock()
 			if len(p.Target) == 0 {
 				return
@@ -217,6 +242,7 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 
 func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, notifier chan *Msg) {
 	defer func() {
+		p.Remove(conn)
 		if err := conn.Close(); err != nil {
 			log.Printf("[%d <-> %d] Failed to close connection : %s\n", p.Id, id, err.Error())
 		}
@@ -252,7 +278,7 @@ func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health
 				return
 			}
 
-			log.Printf("[%d <-> %d] Received %v\n", p.Id, id, msg)
+			log.Printf("[%d <-> %d] Received\n", p.Id, id)
 			p.Enqueue(msg)
 			p.Forward(msg)
 		}
