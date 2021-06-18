@@ -15,4 +15,5 @@
 # vendor/
 
 p2p-circle
+p2p-mesh
 *.txt
