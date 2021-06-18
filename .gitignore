@@ -17,3 +17,5 @@
 p2p-circle
 p2p-mesh
 *.txt
+__pycache__
+venv
