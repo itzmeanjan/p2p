@@ -71,5 +71,10 @@ func main() {
 	<-interruptChan
 	cancel()
 	<-time.After(time.Second)
+	for _, peer := range peers {
+		if err := peer.ExportTrafficCost(); err != nil {
+			log.Printf("Error encountered when exporting traffic cost : %s\n", err.Error())
+		}
+	}
 	log.Println("Shutdown")
 }

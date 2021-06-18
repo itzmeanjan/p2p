@@ -153,6 +153,7 @@ func (p *Peer) UpdateTrafficCost(id uint32, isInwards bool, size uint64) {
 	traffic, ok := p.Traffic[id]
 	if !ok {
 		traffic = &TrafficCost{}
+		p.Traffic[id] = traffic
 	}
 
 	if isInwards {
@@ -160,6 +161,22 @@ func (p *Peer) UpdateTrafficCost(id uint32, isInwards bool, size uint64) {
 	} else {
 		traffic.Out += size
 	}
+}
+
+func (p *Peer) ExportTrafficCost() error {
+	fd, err := os.OpenFile(fmt.Sprintf("%d.traffic.txt", p.Id), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+
+	p.TrafficLock.Lock()
+	defer p.TrafficLock.Unlock()
+
+	for peer, traffic := range p.Traffic {
+		fd.Write([]byte(fmt.Sprintf("%d; %d; %d\n", peer, traffic.In, traffic.Out)))
+	}
+
+	return fd.Close()
 }
 
 func (p *Peer) Client(ctx context.Context, done chan struct{}) {
