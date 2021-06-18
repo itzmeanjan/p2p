@@ -42,7 +42,7 @@ func getPeers(r *ring.Ring) (*ring.Ring, map[uint32]string) {
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	total := 3
+	total := 5
 	peers := make([]*v1.Peer, 0, total)
 	r := generatePeers(total)
 	var _peers map[uint32]string

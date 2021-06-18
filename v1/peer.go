@@ -13,16 +13,23 @@ import (
 )
 
 type Peer struct {
-	Id         uint32
-	Addr       string
-	Target     map[uint32]string
-	Peers      map[net.Conn]*PeerInfo
-	Lock       *sync.RWMutex
-	Queue      []*Msg
-	QueueLock  *sync.RWMutex
-	Log        bool
-	Logger     *os.File
-	PingClient chan struct{}
+	Id          uint32
+	Addr        string
+	Target      map[uint32]string
+	Peers       map[net.Conn]*PeerInfo
+	Lock        *sync.RWMutex
+	Queue       []*Msg
+	QueueLock   *sync.RWMutex
+	Log         bool
+	Logger      *os.File
+	PingClient  chan struct{}
+	Traffic     map[uint32]*TrafficCost
+	TrafficLock *sync.Mutex
+}
+
+type TrafficCost struct {
+	In  uint64
+	Out uint64
 }
 
 type PeerInfo struct {
@@ -33,15 +40,17 @@ type PeerInfo struct {
 
 func New(ctx context.Context, id uint32, addr string, target map[uint32]string, keepLog bool) (*Peer, error) {
 	peer := Peer{
-		Id:         id,
-		Addr:       addr,
-		Target:     target,
-		Peers:      make(map[net.Conn]*PeerInfo),
-		Lock:       &sync.RWMutex{},
-		Queue:      make([]*Msg, 0),
-		QueueLock:  &sync.RWMutex{},
-		Log:        keepLog,
-		PingClient: make(chan struct{}, len(target)),
+		Id:          id,
+		Addr:        addr,
+		Target:      target,
+		Peers:       make(map[net.Conn]*PeerInfo),
+		Lock:        &sync.RWMutex{},
+		Queue:       make([]*Msg, 0),
+		QueueLock:   &sync.RWMutex{},
+		Log:         keepLog,
+		PingClient:  make(chan struct{}, len(target)),
+		Traffic:     make(map[uint32]*TrafficCost),
+		TrafficLock: &sync.Mutex{},
 	}
 
 	if keepLog {
@@ -134,6 +143,22 @@ func (p *Peer) Enqueue(msg *Msg) {
 			return
 		}
 		p.Logger.Write([]byte(fmt.Sprintf("%s\n", data)))
+	}
+}
+
+func (p *Peer) UpdateTrafficCost(id uint32, isInwards bool, size uint64) {
+	p.TrafficLock.Lock()
+	defer p.TrafficLock.Unlock()
+
+	traffic, ok := p.Traffic[id]
+	if !ok {
+		traffic = &TrafficCost{}
+	}
+
+	if isInwards {
+		traffic.In += size
+	} else {
+		traffic.Out += size
 	}
 }
 
@@ -250,13 +275,15 @@ func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, n
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	health := make(chan struct{}, 2)
+	stopChan := make(chan struct{})
 	go p.read(ctx, id, rw, health)
-	go p.write(ctx, id, rw, health, notifier)
+	go p.write(ctx, id, rw, health, stopChan, notifier)
 
 	select {
 	case <-ctx.Done():
 		return
 	case <-health:
+		stopChan <- struct{}{}
 		return
 	}
 }
@@ -273,28 +300,34 @@ func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health
 
 		default:
 			msg := new(Msg)
-			if _, err := msg.read(rw); err != nil {
+			n, err := msg.read(rw)
+			if err != nil {
 				log.Printf("[%d <-> %d] Failed to read : %s\n", p.Id, id, err.Error())
 				return
 			}
 
+			p.UpdateTrafficCost(id, true, uint64(n))
 			log.Printf("[%d <-> %d] Received\n", p.Id, id)
+
 			p.Enqueue(msg)
 			p.Forward(msg)
 		}
 	}
 }
 
-func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}, notifier chan *Msg) {
+func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}, stopChan chan struct{}, notifier chan *Msg) {
 	defer func() {
 		health <- struct{}{}
 	}()
 
 	msg := Msg{Id: p.Id, Hops: []uint32{p.Id}}
-	if _, err := msg.write(rw); err != nil {
+	n, err := msg.write(rw)
+	if err != nil {
 		log.Printf("[%d <-> %d] Failed to write own message : %s\n", p.Id, id, err.Error())
 		return
 	}
+
+	p.UpdateTrafficCost(id, false, uint64(n))
 	log.Printf("[%d <-> %d] Sent own message\n", p.Id, id)
 
 	for {
@@ -302,12 +335,18 @@ func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, healt
 		case <-ctx.Done():
 			return
 
+		case <-stopChan:
+			return
+
 		case msg := <-notifier:
 			msg.Hops = append(msg.Hops, p.Id)
-			if _, err := msg.write(rw); err != nil {
+			n, err := msg.write(rw)
+			if err != nil {
 				log.Printf("[%d <-> %d] Failed to write message : %s\n", p.Id, id, err.Error())
 				return
 			}
+
+			p.UpdateTrafficCost(id, false, uint64(n))
 			log.Printf("[%d <-> %d] Forwarded\n", p.Id, id)
 		}
 	}

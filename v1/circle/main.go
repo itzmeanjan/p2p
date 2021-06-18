@@ -32,7 +32,7 @@ func generatePeers(total int) *ring.Ring {
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	total := 3
+	total := 5
 	peers := make([]*v1.Peer, 0, total)
 	r := generatePeers(total)
 	for i := 0; i < total; i++ {
