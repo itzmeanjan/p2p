@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 type Peer struct {
@@ -35,7 +36,7 @@ type TrafficCost struct {
 type PeerInfo struct {
 	Id   uint32
 	Addr string
-	Ping chan *Msg
+	Ping chan Msg
 }
 
 func New(ctx context.Context, id uint32, addr string, target map[uint32]string, keepLog bool) (*Peer, error) {
@@ -83,7 +84,7 @@ func (p *Peer) LogHandler(ctx context.Context) {
 }
 
 // Invoked when peer has established connection with another peer
-func (p *Peer) Add(conn net.Conn, id uint32, notifier chan *Msg) bool {
+func (p *Peer) Add(conn net.Conn, id uint32, notifier chan Msg) bool {
 	p.Lock.Lock()
 	defer p.Lock.Unlock()
 
@@ -124,7 +125,7 @@ func (p *Peer) Forward(msg *Msg) {
 		}
 
 		if forward {
-			info.Ping <- msg
+			info.Ping <- *msg
 		}
 	}
 }
@@ -203,11 +204,14 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 			}
 			p.Lock.RUnlock()
 
+			// Attempting to connect to peer
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
 				log.Printf("[%d <-> %d] Failed to connect : %s\n", p.Id, id, err.Error())
 				break OUT
 			}
+
+			<-time.After(10 * time.Millisecond)
 
 			// Writing peer id to stream
 			if err := binary.Write(conn, binary.BigEndian, p.Id); err != nil {
@@ -215,7 +219,7 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 				break OUT
 			}
 
-			notifier := make(chan *Msg, 1)
+			notifier := make(chan Msg, 1)
 			if !p.Add(conn, id, notifier) {
 				if err := conn.Close(); err != nil {
 					log.Printf("[%d <-> %d] Failed to tear down : %s\n", p.Id, id, err.Error())
@@ -226,6 +230,7 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 
 			log.Printf("[%d <-> %d] Connected\n", p.Id, id)
 			go p.handleConnection(ctx, id, conn, notifier)
+
 		}
 	}
 }
@@ -267,7 +272,7 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 				break OUT
 			}
 
-			notifier := make(chan *Msg, 1)
+			notifier := make(chan Msg, 1)
 			if !p.Add(conn, id, notifier) {
 				if err := conn.Close(); err != nil {
 					log.Printf("[%d <-> %d] Failed to tear down : %s\n", p.Id, id, err.Error())
@@ -278,11 +283,12 @@ func (p *Peer) Server(ctx context.Context, done chan struct{}) {
 
 			log.Printf("[%d <-> %d] Accepted connection\n", p.Id, id)
 			go p.handleConnection(ctx, id, conn, notifier)
+
 		}
 	}
 }
 
-func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, notifier chan *Msg) {
+func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, notifier chan Msg) {
 	defer func() {
 		p.Remove(conn)
 		if err := conn.Close(); err != nil {
@@ -332,11 +338,12 @@ func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health
 	}
 }
 
-func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}, stopChan chan struct{}, notifier chan *Msg) {
+func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}, stopChan chan struct{}, notifier chan Msg) {
 	defer func() {
 		health <- struct{}{}
 	}()
 
+	<-time.After(10 * time.Millisecond)
 	msg := Msg{Id: p.Id, Hops: []uint32{p.Id}}
 	n, err := msg.write(rw)
 	if err != nil {
@@ -356,6 +363,7 @@ func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, healt
 			return
 
 		case msg := <-notifier:
+			<-time.After(10 * time.Millisecond)
 			msg.Hops = append(msg.Hops, p.Id)
 			n, err := msg.write(rw)
 			if err != nil {
