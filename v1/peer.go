@@ -1,11 +1,11 @@
 package v1
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -205,7 +205,11 @@ func (p *Peer) Client(ctx context.Context, done chan struct{}) {
 			p.Lock.RUnlock()
 
 			// Attempting to connect to peer
-			conn, err := net.Dial("tcp", addr)
+			d := net.Dialer{
+				Timeout:  5 * time.Second,
+				Deadline: time.Now().Add(20 * time.Second),
+			}
+			conn, err := d.DialContext(ctx, "tcp", addr)
 			if err != nil {
 				log.Printf("[%d <-> %d] Failed to connect : %s\n", p.Id, id, err.Error())
 				break OUT
@@ -296,11 +300,10 @@ func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, n
 		}
 	}()
 
-	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	health := make(chan struct{}, 2)
 	stopChan := make(chan struct{})
-	go p.read(ctx, id, rw, health)
-	go p.write(ctx, id, rw, health, stopChan, notifier)
+	go p.read(ctx, id, conn, health)
+	go p.write(ctx, id, conn, health, stopChan, notifier)
 
 	select {
 	case <-ctx.Done():
@@ -311,7 +314,7 @@ func (p *Peer) handleConnection(ctx context.Context, id uint32, conn net.Conn, n
 	}
 }
 
-func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}) {
+func (p *Peer) read(ctx context.Context, id uint32, r io.Reader, health chan struct{}) {
 	defer func() {
 		health <- struct{}{}
 	}()
@@ -323,7 +326,7 @@ func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health
 
 		default:
 			msg := new(Msg)
-			n, err := msg.read(rw)
+			n, err := msg.read(r)
 			if err != nil {
 				log.Printf("[%d <-> %d] Failed to read : %s\n", p.Id, id, err.Error())
 				return
@@ -338,14 +341,14 @@ func (p *Peer) read(ctx context.Context, id uint32, rw *bufio.ReadWriter, health
 	}
 }
 
-func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, health chan struct{}, stopChan chan struct{}, notifier chan Msg) {
+func (p *Peer) write(ctx context.Context, id uint32, w io.Writer, health chan struct{}, stopChan chan struct{}, notifier chan Msg) {
 	defer func() {
 		health <- struct{}{}
 	}()
 
 	<-time.After(10 * time.Millisecond)
 	msg := Msg{Id: p.Id, Hops: []uint32{p.Id}}
-	n, err := msg.write(rw)
+	n, err := msg.write(w)
 	if err != nil {
 		log.Printf("[%d <-> %d] Failed to write own message : %s\n", p.Id, id, err.Error())
 		return
@@ -365,7 +368,7 @@ func (p *Peer) write(ctx context.Context, id uint32, rw *bufio.ReadWriter, healt
 		case msg := <-notifier:
 			<-time.After(10 * time.Millisecond)
 			msg.Hops = append(msg.Hops, p.Id)
-			n, err := msg.write(rw)
+			n, err := msg.write(w)
 			if err != nil {
 				log.Printf("[%d <-> %d] Failed to write message : %s\n", p.Id, id, err.Error())
 				return

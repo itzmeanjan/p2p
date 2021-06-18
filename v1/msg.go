@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"bufio"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -13,16 +12,14 @@ type Msg struct {
 	Hops []uint32 `json:"hops"`
 }
 
-func (m *Msg) read(rw *bufio.ReadWriter) (int, error) {
-	buf := make([]byte, 4)
-	if _, err := io.ReadFull(rw, buf); err != nil {
+func (m *Msg) read(r io.Reader) (int, error) {
+	var size uint32
+	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return 0, err
 	}
 
-	size := binary.LittleEndian.Uint32(buf)
-
-	buf = make([]byte, size)
-	n, err := io.ReadFull(rw, buf)
+	buf := make([]byte, size)
+	n, err := r.Read(buf)
 	if err != nil {
 		return 4, err
 	}
@@ -37,22 +34,18 @@ func (m *Msg) read(rw *bufio.ReadWriter) (int, error) {
 	return n + 4, nil
 }
 
-func (m *Msg) write(rw *bufio.ReadWriter) (int, error) {
+func (m *Msg) write(w io.Writer) (int, error) {
 	marshalled, err := json.Marshal(&m)
 	if err != nil {
 		return 0, err
 	}
 
 	buf := make([]byte, 4+len(marshalled))
-	binary.LittleEndian.PutUint32(buf[:4], uint32(len(marshalled)))
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(marshalled)))
 	n := copy(buf[4:], marshalled)
 	if n != len(marshalled) {
 		return 0, errors.New("full message not written")
 	}
 
-	n, err = rw.Write(buf)
-	if err == nil {
-		err = rw.Flush()
-	}
-	return n, err
+	return w.Write(buf)
 }
