@@ -5,7 +5,8 @@ from os.path import join, abspath
 from re import compile as reg_compile
 from typing import List, Tuple
 from pandas.core.frame import DataFrame
-import pandas
+from matplotlib import pyplot as plt
+import seaborn as sns
 
 
 def get_file_paths(root: str) -> List[Tuple[int, str]]:
@@ -46,14 +47,43 @@ def read(self_id: int, file: str, df: DataFrame) -> DataFrame:
 
 
 def read_logs(root: str) -> DataFrame:
-    df = pandas.DataFrame()
+    df = DataFrame()
     for (peer, path) in get_file_paths(root):
         df = read(peer, path, df)
-    return df.reset_index(drop=True)
+
+    df = df.reset_index(drop=True)
+    z = zip(df['from'].values, df['to'].values, df['total'].values)
+    return DataFrame([{"pair": f'{i[0]} <-> {i[1]}', "data": i[2]} for i in z])
+
+
+def plot(df: DataFrame) -> bool:
+    try:
+        with plt.style.context('dark_background'):
+            fig = plt.Figure(figsize=(16, 9), dpi=100)
+            sns.barplot(x='pair', y='data', data=df, ax=fig.gca())
+
+            fig.gca().set_xlabel('Peer Connection Pair', labelpad=12)
+            fig.gca().set_ylabel('Data Transferred over wire ( in bytes )', labelpad=12)
+            fig.suptitle('Total Data over Wire',
+                         fontsize=16, y=1)
+
+            fig.savefig(
+                'traffic.png',
+                bbox_inches='tight',
+                pad_inches=.5)
+            plt.close(fig)
+        return True
+    except Exception as e:
+        print(f'Error : {e}')
+        return False
 
 
 def main():
-    print(read_logs("../.."))
+    print('Processing traffic log ...')
+    if plot(read_logs("../..")):
+        print('Generated plot !')
+    else:
+        print('Failed !')
 
 
 if __name__ == '__main__':
