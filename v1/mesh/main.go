@@ -23,7 +23,7 @@ func generatePeers(total int) *ring.Ring {
 	for i := 0; i < r.Len(); i++ {
 		r.Value = &Info{
 			Id:   uint32(i),
-			Addr: fmt.Sprintf("127.0.0.1:700%d", i),
+			Addr: fmt.Sprintf("127.0.0.1:%d", 11000+i),
 		}
 		r = r.Next()
 	}

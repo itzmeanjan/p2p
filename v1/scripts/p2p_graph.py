@@ -20,7 +20,7 @@ def get_file_paths(root: str) -> List[Tuple[int, str]]:
 
 
 def read_and_plot(self_id: int, traffic_log: str, message_log: str):
-    nt = Network(height='720px', width='72%',
+    nt = Network(height='720px', width='60%',
                  bgcolor='#232323', font_color='white',
                  heading=f'P2P Network as perceived by `Peer {self_id}`')
     nt.add_node(self_id, label=f'Peer {self_id}')
@@ -42,7 +42,7 @@ def read_and_plot(self_id: int, traffic_log: str, message_log: str):
         peer = hops[-1]
         weight = traffic[peer]
         nt.add_node(peer, label=f'Peer {peer}')
-        nt.add_edge(self_id, peer, value=sum(weight),
+        nt.add_edge(self_id, peer,
                     title=f'In: {weight[0]} bytes | Out: {weight[0]} bytes')
         if len(hops) == 1:
             return
