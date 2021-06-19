@@ -20,10 +20,9 @@ def get_file_paths(root: str) -> List[Tuple[int, str]]:
 
 
 def read_and_plot(self_id: int, traffic_log: str, message_log: str):
-    nt = Network(height='500px', width='100%',
+    nt = Network(height='720px', width='72%',
                  bgcolor='#232323', font_color='white',
-                 heading=f'P2P Network as seen by Peer {self_id}')
-    nt.barnes_hut()
+                 heading=f'P2P Network as perceived by `Peer {self_id}`')
     nt.add_node(self_id, label=f'Peer {self_id}')
 
     def read_traffic() -> Dict[int, Tuple[int, int]]:
@@ -64,6 +63,7 @@ def read_and_plot(self_id: int, traffic_log: str, message_log: str):
             msg = loads(ln.strip())
             process_hops(msg['hops'])
 
+    nt.show_buttons(filter_=['physics', 'interaction', 'layout'])
     nt.save_graph(f'p2p_graph_{self_id}.html')
 
 
