@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
@@ -18,6 +20,8 @@ import (
 	noise "github.com/libp2p/go-libp2p-noise"
 	tls "github.com/libp2p/go-libp2p-tls"
 	"github.com/multiformats/go-multiaddr"
+	"gonum.org/v1/gonum/graph/encoding/dot"
+	"gonum.org/v1/gonum/graph/simple"
 )
 
 var parentCtx context.Context
@@ -31,6 +35,49 @@ type Peer struct {
 	Host        host.Host
 	Writers     map[int64]chan Message
 	WritersLock *sync.RWMutex
+	Network     *simple.UndirectedGraph
+}
+
+func (p *Peer) UpdateNetwork(msg *Message) {
+	for i := 0; i < len(msg.Hops); i++ {
+		hop := msg.Hops[i]
+		node := p.Network.Node(hop)
+		if node == nil {
+			p.Network.AddNode(simple.Node(hop))
+		}
+	}
+
+	for i := 0; i < len(msg.Hops)-1; i++ {
+		hop_1 := msg.Hops[i]
+		hop_2 := msg.Hops[i+1]
+		if !p.Network.HasEdgeBetween(hop_1, hop_2) {
+			p.Network.SetEdge(p.Network.NewEdge(p.Network.Node(hop_1), p.Network.Node(hop_2)))
+		}
+	}
+}
+
+func (p *Peer) ExportNetwork() error {
+	out, err := dot.Marshal(p.Network, fmt.Sprintf("P2P Network viewed by Peer_%d", p.Id), "", "  ")
+	if err != nil {
+		return err
+	}
+
+	file := fmt.Sprintf("%d_%d.txt", p.Id, time.Now().Unix())
+	fd, err := os.OpenFile(file, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := fd.Close(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
+	}()
+	n, err := fd.Write(out)
+	if err != nil {
+		return err
+	}
+	log.Printf("[%d] Logged perceived network into %s [%d bytes]\n", p.Id, file, n)
+	return nil
 }
 
 func (p *Peer) GetAddress() ([]multiaddr.Multiaddr, error) {
@@ -54,7 +101,7 @@ func (p *Peer) Destroy() {
 
 func (p *Peer) Probe() {
 	log.Printf("[%d] Started probing\n", p.Id)
-	msg := Message{Author: p.Id, Kind: "probe", Hops: []int64{p.Id}}
+	msg := Message{Author: p.Id, Kind: "probe", Hops: []int64{}}
 	p.broadcast(&msg)
 }
 
@@ -148,6 +195,9 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					log.Printf("[%d] Connected to %d\n", p.Id, id)
 				} else {
 					log.Printf("[%d] Received from %d\n", p.Id, id)
+					if msg.Kind == "probe" {
+						p.UpdateNetwork(msg)
+					}
 				}
 
 				p.broadcast(msg)
@@ -244,6 +294,7 @@ func NewPeer(ctx context.Context, id int64, port int) (*Peer, error) {
 		Host:        host,
 		Writers:     make(map[int64]chan Message),
 		WritersLock: &sync.RWMutex{},
+		Network:     simple.NewUndirectedGraph(),
 	}
 
 	p.HandleStream()
