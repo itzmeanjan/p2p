@@ -49,6 +49,9 @@ func (p *Peer) InitNetwork(peer int64) {
 		node_2 = simple.Node(peer)
 		p.Network.AddNode(node_2)
 	}
+	if p.Network.HasEdgeBetween(p.Id, peer) {
+		return
+	}
 	p.Network.SetEdge(p.Network.NewEdge(node_1, node_2))
 }
 
