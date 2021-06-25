@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/ring"
 	"context"
 	"log"
 	"os"
@@ -15,7 +16,7 @@ func main() {
 	var peerCount int64 = 8
 	ctx, cancel := context.WithCancel(context.Background())
 
-	peers := make([]*peer.Peer, 0, peerCount)
+	peers := ring.New(int(peerCount))
 	var i int64
 	for ; i < peerCount; i++ {
 		p, err := peer.NewPeer(ctx, i+1, 7001+int(i))
@@ -23,10 +24,13 @@ func main() {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
-		peers = append(peers, p)
+		peers.Value = p
+		peers = peers.Next()
 	}
 
-	for _, p := range peers {
+	peer.InitContext(ctx)
+	peers.Do(func(i interface{}) {
+		p := i.(*peer.Peer)
 		addrs, err := p.GetAddress()
 		if err != nil {
 			log.Printf("Error: %s\n", err.Error())
@@ -35,7 +39,7 @@ func main() {
 		for _, addr := range addrs {
 			log.Printf("%d => %s\n", p.Id, addr)
 		}
-	}
+	})
 
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
@@ -43,8 +47,9 @@ func main() {
 	<-interruptChan
 	cancel()
 	<-time.After(time.Second)
-	for _, p := range peers {
+	peers.Do(func(i interface{}) {
+		p := i.(*peer.Peer)
 		p.Destroy()
-	}
+	})
 	log.Println("Graceful shutdown !")
 }

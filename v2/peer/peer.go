@@ -12,11 +12,18 @@ import (
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	noise "github.com/libp2p/go-libp2p-noise"
 	tls "github.com/libp2p/go-libp2p-tls"
 	"github.com/multiformats/go-multiaddr"
 )
+
+var parentCtx context.Context
+
+func InitContext(ctx context.Context) {
+	parentCtx = ctx
+}
 
 type Peer struct {
 	Id          int64
@@ -44,6 +51,16 @@ func (p *Peer) Destroy() {
 	}
 }
 
+func (p *Peer) Connect(ctx context.Context, id peer.ID, addr multiaddr.Multiaddr) {
+	stream, err := p.Host.NewStream(ctx, id, protocol.ID("/v2/p2p/simulation"))
+	if err != nil {
+		log.Printf("Error: %s\n", err.Error())
+		return
+	}
+
+	go p.handle(stream)
+}
+
 func (p *Peer) HandleStream() {
 	p.Host.SetStreamHandler(protocol.ID("/v2/p2p/simulation"), p.handle)
 }
@@ -52,43 +69,94 @@ func (p *Peer) handle(stream network.Stream) {
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 	in := make(chan struct{}, 2)
 	out := make(chan struct{}, 2)
-	writer := make(chan Message, 1)
+	writer := make(chan Message, 2)
+	idChan := make(chan int64, 1)
 
-	go p.read(rw, out, in, writer)
+	go p.read(rw, out, in, writer, idChan)
 	go p.write(rw, out, in, writer)
 
+	id := <-idChan
 	out <- <-in
+
+	p.WritersLock.Lock()
+	defer p.WritersLock.Unlock()
+	delete(p.Writers, id)
+	log.Printf("Disconnected from %d\n", id)
+
 	if err := stream.Close(); err != nil {
 		log.Printf("Error: %s\n", err.Error())
 	}
 }
 
-func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message) {
+func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, idChan chan int64) {
 	defer func() {
 		out <- struct{}{}
 	}()
 
 	var isFirst bool = true
-	for {
-		msg := new(Message)
-		if _, err := msg.Read(rw); err != nil {
-			log.Printf("Error: %s\n", err.Error())
-			break
-		}
-		if isFirst {
-			if msg.Kind != "add" {
-				break
-			}
-			if msg.Author == p.Id {
-				break
-			}
+	{
+	OUT:
+		for {
+			select {
+			case <-parentCtx.Done():
+				break OUT
 
-			msg.Peer = p.Id
-			p.WritersLock.Lock()
-			p.Writers[msg.Author] = writer
-			p.WritersLock.Unlock()
-			isFirst = false
+			default:
+				msg := new(Message)
+				if _, err := msg.Read(rw); err != nil {
+					log.Printf("Error: %s\n", err.Error())
+					break OUT
+				}
+				if isFirst {
+					if msg.Kind != "add" {
+						break OUT
+					}
+					if msg.Author == p.Id {
+						break OUT
+					}
+
+					msg.Peer = p.Id
+					p.WritersLock.Lock()
+					p.Writers[msg.Author] = writer
+					p.WritersLock.Unlock()
+					isFirst = false
+					idChan <- msg.Author
+					log.Printf("Connected to %d\n", msg.Author)
+				}
+				p.broadcast(msg)
+			}
 		}
+	}
+}
+
+func (p *Peer) broadcast(msg *Message) {
+	if msg.Author == p.Id {
+		return
+	}
+
+	p.WritersLock.Lock()
+	defer p.WritersLock.Unlock()
+
+	for id, ping := range p.Writers {
+		if id == msg.Author {
+			continue
+		}
+		if msg.Hops == nil {
+			continue
+		}
+
+		var traversed bool
+		for _, hop := range msg.Hops {
+			if id == hop {
+				traversed = true
+				break
+			}
+		}
+		if traversed {
+			continue
+		}
+
+		ping <- *msg
 	}
 }
 
@@ -107,6 +175,9 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 	OUT:
 		for {
 			select {
+			case <-parentCtx.Done():
+				break OUT
+
 			case <-in:
 				break OUT
 
