@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sync"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
@@ -18,8 +19,10 @@ import (
 )
 
 type Peer struct {
-	Id   int64
-	Host host.Host
+	Id          int64
+	Host        host.Host
+	Writers     map[int64]chan Message
+	WritersLock *sync.RWMutex
 }
 
 func (p *Peer) GetAddress() ([]multiaddr.Multiaddr, error) {
@@ -49,9 +52,10 @@ func (p *Peer) handle(stream network.Stream) {
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 	in := make(chan struct{}, 2)
 	out := make(chan struct{}, 2)
+	writer := make(chan Message, 1)
 
-	go p.read(rw, out, in)
-	go p.write(rw, out, in)
+	go p.read(rw, out, in, writer)
+	go p.write(rw, out, in, writer)
 
 	out <- <-in
 	if err := stream.Close(); err != nil {
@@ -59,9 +63,62 @@ func (p *Peer) handle(stream network.Stream) {
 	}
 }
 
-func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}) {}
+func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message) {
+	defer func() {
+		out <- struct{}{}
+	}()
 
-func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}) {}
+	var isFirst bool = true
+	for {
+		msg := new(Message)
+		if _, err := msg.Read(rw); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+			break
+		}
+		if isFirst {
+			if msg.Kind != "add" {
+				break
+			}
+			if msg.Author == p.Id {
+				break
+			}
+
+			msg.Peer = p.Id
+			p.WritersLock.Lock()
+			p.Writers[msg.Author] = writer
+			p.WritersLock.Unlock()
+			isFirst = false
+		}
+	}
+}
+
+func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message) {
+	defer func() {
+		out <- struct{}{}
+	}()
+
+	msg := Message{Author: p.Id, Kind: "add"}
+	if _, err := msg.Write(rw); err != nil {
+		log.Printf("Error: %s\n", err.Error())
+		return
+	}
+
+	{
+	OUT:
+		for {
+			select {
+			case <-in:
+				break OUT
+
+			case msg := <-writer:
+				if _, err := msg.Write(rw); err != nil {
+					log.Printf("Error: %s\n", err.Error())
+					break OUT
+				}
+			}
+		}
+	}
+}
 
 func createHost(ctx context.Context, id int64, port int) (host.Host, error) {
 	priv, _, err := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 1024, rand.New(rand.NewSource(id)))
@@ -85,8 +142,10 @@ func NewPeer(ctx context.Context, id int64, port int) (*Peer, error) {
 		return nil, err
 	}
 	p := Peer{
-		Id:   id,
-		Host: host,
+		Id:          id,
+		Host:        host,
+		Writers:     make(map[int64]chan Message),
+		WritersLock: &sync.RWMutex{},
 	}
 
 	p.HandleStream()
