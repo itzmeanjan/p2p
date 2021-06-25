@@ -56,6 +56,12 @@ func main() {
 		peers = peers.Next()
 	}
 
+	<-time.After(4 * time.Second)
+	peers.Do(func(i interface{}) {
+		p := i.(*peer.Peer)
+		p.Probe()
+	})
+
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
 

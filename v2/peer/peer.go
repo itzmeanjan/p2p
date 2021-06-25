@@ -52,6 +52,12 @@ func (p *Peer) Destroy() {
 	}
 }
 
+func (p *Peer) Probe() {
+	log.Printf("[%d] Started probing\n", p.Id)
+	msg := Message{Author: p.Id, Kind: "probe", Hops: []int64{p.Id}}
+	p.broadcast(&msg)
+}
+
 func (p *Peer) AddToPeerStore(id peer.ID, addrs []multiaddr.Multiaddr) {
 	p.Host.Peerstore().AddAddrs(id, addrs, peerstore.PermanentAddrTTL)
 }
@@ -89,6 +95,9 @@ func (p *Peer) handle(stream network.Stream) {
 
 	id := <-idChan
 	out <- <-in
+
+	msg := Message{Author: p.Id, Kind: "del"}
+	p.broadcast(&msg)
 
 	p.WritersLock.Lock()
 	defer p.WritersLock.Unlock()
@@ -148,10 +157,6 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 }
 
 func (p *Peer) broadcast(msg *Message) {
-	if msg.Author == p.Id {
-		return
-	}
-
 	p.WritersLock.Lock()
 	defer p.WritersLock.Unlock()
 
@@ -200,6 +205,9 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 				break OUT
 
 			case msg := <-writer:
+				if msg.Kind == "probe" {
+					msg.Hops = append(msg.Hops, p.Id)
+				}
 				if _, err := msg.Write(rw); err != nil {
 					log.Printf("Error: %s\n", err.Error())
 					break OUT
