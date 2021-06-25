@@ -71,6 +71,7 @@ func main() {
 	peers.Do(func(i interface{}) {
 		p := i.(*peer.Peer)
 		p.Destroy()
+		p.ExportNetwork()
 	})
 	log.Println("Graceful shutdown !")
 }

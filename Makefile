@@ -23,3 +23,12 @@ build_v2:
 
 run_v2: build_v2
 	./v2_node
+
+remove_export:
+	find . -maxdepth 1 -name '*.dot' | xargs rm -v
+
+gen_graph:
+	find . -maxdepth 1 -name '*.dot' | xargs dot -Tpng -s144 -O
+
+remove_graph:
+	find . -maxdepth 1 -name '*.png' | xargs rm -v

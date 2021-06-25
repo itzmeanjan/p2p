@@ -38,6 +38,20 @@ type Peer struct {
 	Network     *simple.UndirectedGraph
 }
 
+func (p *Peer) InitNetwork(peer int64) {
+	node_1 := p.Network.Node(p.Id)
+	if node_1 == nil {
+		node_1 = simple.Node(p.Id)
+		p.Network.AddNode(node_1)
+	}
+	node_2 := p.Network.Node(peer)
+	if node_2 == nil {
+		node_2 = simple.Node(peer)
+		p.Network.AddNode(node_2)
+	}
+	p.Network.SetEdge(p.Network.NewEdge(node_1, node_2))
+}
+
 func (p *Peer) UpdateNetwork(msg *Message) {
 	for i := 0; i < len(msg.Hops); i++ {
 		hop := msg.Hops[i]
@@ -62,7 +76,7 @@ func (p *Peer) ExportNetwork() error {
 		return err
 	}
 
-	file := fmt.Sprintf("%d_%d.txt", p.Id, time.Now().Unix())
+	file := fmt.Sprintf("%d_%d.dot", p.Id, time.Now().Unix())
 	fd, err := os.OpenFile(file, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -192,6 +206,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					id = msg.Author
 					idChan <- id
 					idChan <- id
+					p.InitNetwork(id)
 					log.Printf("[%d] Connected to %d\n", p.Id, id)
 				} else {
 					log.Printf("[%d] Received from %d\n", p.Id, id)
