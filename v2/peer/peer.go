@@ -85,7 +85,7 @@ func (p *Peer) handle(stream network.Stream) {
 	idChan := make(chan int64, 1)
 
 	go p.read(rw, out, in, writer, idChan)
-	go p.write(rw, out, in, writer)
+	go p.write(rw, out, in, writer, idChan)
 
 	id := <-idChan
 	out <- <-in
@@ -106,6 +106,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 	}()
 
 	var isFirst bool = true
+	var id int64
 	{
 	OUT:
 		for {
@@ -132,9 +133,14 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					p.Writers[msg.Author] = writer
 					p.WritersLock.Unlock()
 					isFirst = false
-					idChan <- msg.Author
-					log.Printf("[%d] Connected to %d\n", p.Id, msg.Author)
+					id = msg.Author
+					idChan <- id
+					idChan <- id
+					log.Printf("[%d] Connected to %d\n", p.Id, id)
+				} else {
+					log.Printf("[%d] Received from %d\n", p.Id, id)
 				}
+
 				p.broadcast(msg)
 			}
 		}
@@ -172,7 +178,7 @@ func (p *Peer) broadcast(msg *Message) {
 	}
 }
 
-func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message) {
+func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, idChan chan int64) {
 	defer func() {
 		out <- struct{}{}
 	}()
@@ -182,7 +188,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 		log.Printf("Error: %s\n", err.Error())
 		return
 	}
-
+	id := <-idChan
 	{
 	OUT:
 		for {
@@ -198,6 +204,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 					log.Printf("Error: %s\n", err.Error())
 					break OUT
 				}
+				log.Printf("[%d] Wrote to %d\n", p.Id, id)
 			}
 		}
 	}
