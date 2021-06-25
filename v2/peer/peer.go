@@ -20,6 +20,8 @@ import (
 	noise "github.com/libp2p/go-libp2p-noise"
 	tls "github.com/libp2p/go-libp2p-tls"
 	"github.com/multiformats/go-multiaddr"
+	"gonum.org/v1/gonum/graph"
+	"gonum.org/v1/gonum/graph/encoding"
 	"gonum.org/v1/gonum/graph/encoding/dot"
 	"gonum.org/v1/gonum/graph/simple"
 )
@@ -38,29 +40,72 @@ type Peer struct {
 	Network     *simple.UndirectedGraph
 }
 
+type node struct {
+	simple.Node
+	attrs []encoding.Attribute
+}
+
+func (n *node) DOTID() string {
+	return fmt.Sprintf("Peer %d", n.ID())
+}
+
+func (n *node) String() string {
+	return n.DOTID()
+}
+
+func (n *node) Attributes() []encoding.Attribute {
+	return n.attrs
+}
+
+type edge struct {
+	simple.Edge
+	attrs []encoding.Attribute
+}
+
+func (e *edge) Attributes() []encoding.Attribute {
+	return e.attrs
+}
+
+func newEdge(frm graph.Node, to graph.Node) *edge {
+	return &edge{
+		Edge: simple.Edge{
+			F: frm,
+			T: to,
+		}}
+}
+
 func (p *Peer) InitNetwork(peer int64) {
 	node_1 := p.Network.Node(p.Id)
 	if node_1 == nil {
-		node_1 = simple.Node(p.Id)
-		p.Network.AddNode(node_1)
+		p.Network.AddNode(&node{
+			Node: simple.Node(p.Id),
+			attrs: []encoding.Attribute{
+				{Key: "color", Value: "black"},
+				{Key: "style", Value: "filled"},
+				{Key: "fontcolor", Value: "white"}}})
 	}
 	node_2 := p.Network.Node(peer)
 	if node_2 == nil {
-		node_2 = simple.Node(peer)
-		p.Network.AddNode(node_2)
+		p.Network.AddNode(&node{
+			Node: simple.Node(peer),
+			attrs: []encoding.Attribute{
+				{Key: "style", Value: "filled"}}})
 	}
 	if p.Network.HasEdgeBetween(p.Id, peer) {
 		return
 	}
-	p.Network.SetEdge(p.Network.NewEdge(node_1, node_2))
+	p.Network.SetEdge(newEdge(p.Network.Node(p.Id), p.Network.Node(peer)))
 }
 
 func (p *Peer) UpdateNetwork(msg *Message) {
 	for i := 0; i < len(msg.Hops); i++ {
 		hop := msg.Hops[i]
-		node := p.Network.Node(hop)
-		if node == nil {
-			p.Network.AddNode(simple.Node(hop))
+		n := p.Network.Node(hop)
+		if n == nil {
+			p.Network.AddNode(&node{
+				Node: simple.Node(hop),
+				attrs: []encoding.Attribute{
+					{Key: "style", Value: "filled"}}})
 		}
 	}
 
@@ -68,7 +113,7 @@ func (p *Peer) UpdateNetwork(msg *Message) {
 		hop_1 := msg.Hops[i]
 		hop_2 := msg.Hops[i+1]
 		if !p.Network.HasEdgeBetween(hop_1, hop_2) {
-			p.Network.SetEdge(p.Network.NewEdge(p.Network.Node(hop_1), p.Network.Node(hop_2)))
+			p.Network.SetEdge(newEdge(p.Network.Node(hop_1), p.Network.Node(hop_2)))
 		}
 	}
 }
