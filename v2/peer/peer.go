@@ -13,6 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-core/peerstore"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	noise "github.com/libp2p/go-libp2p-noise"
 	tls "github.com/libp2p/go-libp2p-tls"
@@ -51,14 +52,25 @@ func (p *Peer) Destroy() {
 	}
 }
 
-func (p *Peer) Connect(ctx context.Context, id peer.ID, addr multiaddr.Multiaddr) {
-	stream, err := p.Host.NewStream(ctx, id, protocol.ID("/v2/p2p/simulation"))
+func (p *Peer) AddToPeerStore(id peer.ID, addrs []multiaddr.Multiaddr) {
+	p.Host.Peerstore().AddAddrs(id, addrs, peerstore.PermanentAddrTTL)
+}
+
+func (p *Peer) Connect(ctx context.Context, addr multiaddr.Multiaddr) error {
+	addInfo, err := peer.AddrInfoFromP2pAddr(addr)
 	if err != nil {
-		log.Printf("Error: %s\n", err.Error())
-		return
+		return err
+	}
+	p.AddToPeerStore(addInfo.ID, addInfo.Addrs)
+	stream, err := p.Host.NewStream(ctx, addInfo.ID, protocol.ID("/v2/p2p/simulation"))
+	if err != nil {
+		return err
 	}
 
-	go p.handle(stream)
+	func(stream network.Stream) {
+		go p.handle(stream)
+	}(stream)
+	return nil
 }
 
 func (p *Peer) HandleStream() {
@@ -81,7 +93,7 @@ func (p *Peer) handle(stream network.Stream) {
 	p.WritersLock.Lock()
 	defer p.WritersLock.Unlock()
 	delete(p.Writers, id)
-	log.Printf("Disconnected from %d\n", id)
+	log.Printf("[%d] Disconnected from %d\n", p.Id, id)
 
 	if err := stream.Close(); err != nil {
 		log.Printf("Error: %s\n", err.Error())
@@ -121,7 +133,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					p.WritersLock.Unlock()
 					isFirst = false
 					idChan <- msg.Author
-					log.Printf("Connected to %d\n", msg.Author)
+					log.Printf("[%d] Connected to %d\n", p.Id, msg.Author)
 				}
 				p.broadcast(msg)
 			}

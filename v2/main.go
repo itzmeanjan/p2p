@@ -41,6 +41,21 @@ func main() {
 		}
 	})
 
+	for i := 0; i < peers.Len(); i++ {
+		cur := peers.Value.(*peer.Peer)
+		nxt := peers.Next().Value.(*peer.Peer)
+		addrs, err := nxt.GetAddress()
+		if err != nil {
+			log.Printf("Error: %s\n", err.Error())
+			return
+		}
+		if err := cur.Connect(ctx, addrs[0]); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+			return
+		}
+		peers = peers.Next()
+	}
+
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
 
