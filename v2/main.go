@@ -55,7 +55,7 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 }
 
 func main() {
-	var peerCount int64 = 4
+	var peerCount int64 = 32
 	var neighbourCount int = 2
 	ctx, cancel := context.WithCancel(context.Background())
 

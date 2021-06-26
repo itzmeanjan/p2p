@@ -81,8 +81,12 @@ func (p *Peer) UpdateTraffic(peer int64, amount int) {
 	p.NetworkLock.Lock()
 	defer p.NetworkLock.Unlock()
 
-	edge := p.Network.Edge(p.Id, peer).(*edge)
-	edge.W += float64(amount)
+	e := p.Network.Edge(p.Id, peer)
+	if e == nil {
+		return
+	}
+	_e := e.(*edge)
+	_e.W += float64(amount)
 }
 
 func (p *Peer) ExportTraffic() error {
@@ -160,6 +164,35 @@ func (p *Peer) UpdateNetwork(msg *Message) {
 	}
 }
 
+func (p *Peer) UpdateNetworkWithNonProbingMessage(msg *Message) {
+	p.NetworkLock.Lock()
+	defer p.NetworkLock.Unlock()
+
+	if n := p.Network.Node(msg.Author); n == nil {
+		p.Network.AddNode(&node{
+			Node: simple.Node(msg.Author),
+			attrs: []encoding.Attribute{
+				{Key: "style", Value: "filled"}}})
+	}
+
+	if n := p.Network.Node(msg.Peer); n == nil {
+		p.Network.AddNode(&node{
+			Node: simple.Node(msg.Peer),
+			attrs: []encoding.Attribute{
+				{Key: "style", Value: "filled"}}})
+	}
+
+	if msg.Kind == "add" {
+		if !p.Network.HasEdgeBetween(msg.Author, msg.Peer) {
+			p.Network.SetEdge(newEdge(p.Network.Node(msg.Author), p.Network.Node(msg.Peer)))
+		}
+	} else {
+		if p.Network.HasEdgeBetween(msg.Author, msg.Peer) {
+			p.Network.RemoveEdge(msg.Author, msg.Peer)
+		}
+	}
+}
+
 func (p *Peer) ExportNetwork() error {
 	p.NetworkLock.RLock()
 	defer p.NetworkLock.RUnlock()
@@ -209,7 +242,7 @@ func (p *Peer) Destroy() {
 func (p *Peer) Probe() {
 	log.Printf("[%d] Started probing\n", p.Id)
 	msg := Message{Author: p.Id, Kind: "probe", Hops: []int64{}}
-	p.broadcast(&msg)
+	p.broadcast_all(&msg)
 }
 
 func (p *Peer) AddToPeerStore(id peer.ID, addrs []multiaddr.Multiaddr) {
@@ -250,9 +283,6 @@ func (p *Peer) handle(stream network.Stream) {
 	id := <-idChan
 	out <- <-in
 
-	msg := Message{Author: p.Id, Kind: "del"}
-	p.broadcast(&msg)
-
 	p.WritersLock.Lock()
 	defer p.WritersLock.Unlock()
 	delete(p.Writers, id)
@@ -261,6 +291,9 @@ func (p *Peer) handle(stream network.Stream) {
 	if err := stream.Close(); err != nil {
 		log.Printf("Error: %s\n", err.Error())
 	}
+
+	msg := Message{Author: p.Id, Kind: "del", Peer: id}
+	p.broadcast_all(&msg)
 }
 
 func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, idChan chan int64) {
@@ -304,20 +337,33 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					log.Printf("[%d] Connected to %d\n", p.Id, id)
 				} else {
 					log.Printf("[%d] Received from %d\n", p.Id, id)
-					if msg.Kind == "probe" {
-						p.UpdateNetwork(msg)
-					}
 				}
 
 				p.UpdateTraffic(id, n)
-				p.broadcast(msg)
+
+				if msg.Kind == "probe" {
+					p.UpdateNetwork(msg)
+					p.broadcast(msg)
+				} else {
+					p.UpdateNetworkWithNonProbingMessage(msg)
+					p.broadcast_change(msg, id)
+				}
 			}
 		}
 	}
 }
 
-func (p *Peer) broadcast(msg *Message) {
-	if msg.Kind == "probe" && msg.Author == p.Id && len(msg.Hops) > 0 {
+func (p *Peer) broadcast_all(msg *Message) {
+	p.WritersLock.RLock()
+	defer p.WritersLock.RUnlock()
+
+	for _, ping := range p.Writers {
+		ping <- *msg
+	}
+}
+
+func (p *Peer) broadcast_change(msg *Message, frm int64) {
+	if msg.Author == p.Id {
 		return
 	}
 
@@ -325,11 +371,27 @@ func (p *Peer) broadcast(msg *Message) {
 	defer p.WritersLock.RUnlock()
 
 	for id, ping := range p.Writers {
-		if msg.Hops == nil {
+		if id == frm {
+			continue
+		}
+		if msg.Author == id || msg.Peer == id {
 			continue
 		}
 
-		if len(msg.Hops) > 0 && msg.Hops[len(msg.Hops)-1] == id {
+		ping <- *msg
+	}
+}
+
+func (p *Peer) broadcast(msg *Message) {
+	if msg.Author == p.Id {
+		return
+	}
+
+	p.WritersLock.RLock()
+	defer p.WritersLock.RUnlock()
+
+	for id, ping := range p.Writers {
+		if msg.Hops[len(msg.Hops)-1] == id {
 			continue
 		}
 
@@ -358,7 +420,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 	}()
 
 	msg := Message{Author: p.Id, Kind: "add"}
-	n, err := msg.Write(rw)
+	mL, err := msg.Write(rw)
 	if err != nil {
 		log.Printf("Error: %s\n", err.Error())
 		return
@@ -367,7 +429,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 
 	defer func() {
 		if id != 0 {
-			p.UpdateTraffic(id, n)
+			p.UpdateTraffic(id, mL)
 		}
 	}()
 
