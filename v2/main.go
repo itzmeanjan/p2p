@@ -14,7 +14,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, count int, record_1 map[int64]int64, record_2 map[int64]int64) error {
+func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, count int, record map[int64]map[int64]struct{}) error {
 	if count > len(peers)-1 {
 		return fmt.Errorf("can't make %d neighbours with %d peers", count, len(peers))
 	}
@@ -32,15 +32,27 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 			return err
 		}
 
-		if v, ok := record_1[p.Id]; ok && v == _p.Id {
-			continue
-		}
-		if v, ok := record_2[p.Id]; ok && v == _p.Id {
-			continue
+		if v, ok := record[p.Id]; ok {
+			if _, ok := v[_p.Id]; ok {
+				continue
+			}
 		}
 
-		record_1[p.Id] = _p.Id
-		record_2[_p.Id] = p.Id
+		if v, ok := record[p.Id]; ok {
+			v[_p.Id] = struct{}{}
+		} else {
+			v = make(map[int64]struct{})
+			v[_p.Id] = struct{}{}
+			record[p.Id] = v
+		}
+
+		if v, ok := record[_p.Id]; ok {
+			v[p.Id] = struct{}{}
+		} else {
+			v = make(map[int64]struct{})
+			v[p.Id] = struct{}{}
+			record[_p.Id] = v
+		}
 		neighbours[addrs[0]] = struct{}{}
 	}
 
@@ -85,12 +97,13 @@ func main() {
 		}
 	}
 
+	rand.Seed(time.Now().UnixNano())
+
 	<-time.After(time.Second)
 	// Neighbour finding phase
-	record_1 := make(map[int64]int64)
-	record_2 := make(map[int64]int64)
+	record := make(map[int64]map[int64]struct{})
 	for i := 0; i < int(peerCount); i++ {
-		if err := connect(ctx, peers[i], i, peers, neighbourCount, record_1, record_2); err != nil {
+		if err := connect(ctx, peers[i], i, peers, neighbourCount, record); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
@@ -116,9 +129,7 @@ func main() {
 		}
 	}
 
-	cancel()
-	<-time.After(time.Second)
-	// Destroy p2p nodes; export traffic & network structure
+	// Export traffic & network structure
 	// data into log files
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
@@ -128,7 +139,14 @@ func main() {
 		if err := p.ExportTraffic(); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 		}
-		p.Destroy()
+	}
+
+	cancel()
+	<-time.After(time.Second)
+
+	// Destroy p2p nodes
+	for i := 0; i < int(peerCount); i++ {
+		peers[i].Destroy()
 	}
 	log.Println("Graceful shutdown !")
 }
