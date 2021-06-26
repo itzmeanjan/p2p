@@ -41,11 +41,6 @@ type Peer struct {
 	NetworkLock *sync.RWMutex
 }
 
-type traffic struct {
-	in  int
-	out int
-}
-
 type node struct {
 	simple.Node
 	attrs []encoding.Attribute
@@ -322,19 +317,28 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 }
 
 func (p *Peer) broadcast(msg *Message) {
+	if msg.Kind == "probe" && msg.Author == p.Id && len(msg.Hops) > 0 {
+		return
+	}
+
 	p.WritersLock.RLock()
 	defer p.WritersLock.RUnlock()
 
 	for id, ping := range p.Writers {
-		if id == msg.Author {
-			continue
-		}
 		if msg.Hops == nil {
 			continue
 		}
 
+		if len(msg.Hops) > 0 && msg.Hops[len(msg.Hops)-1] == id {
+			continue
+		}
+
 		var traversed bool
-		for _, hop := range msg.Hops {
+		for i := 0; i < len(msg.Hops)-1; i++ {
+			hop := msg.Hops[i]
+			if i == 0 && hop == id {
+				break
+			}
 			if id == hop {
 				traversed = true
 				break

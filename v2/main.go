@@ -38,15 +38,15 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 		if err := p.Connect(ctx, n); err != nil {
 			return err
 		}
-		<-time.After(time.Second)
+		<-time.After(10 * time.Millisecond)
 	}
 
 	return nil
 }
 
 func main() {
-	var peerCount int64 = 8
-	var neighbourCount int = 2
+	var peerCount int64 = 32
+	var neighbourCount int = 4
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Creating libp2p peers
@@ -82,24 +82,28 @@ func main() {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
-		<-time.After(time.Second)
+		<-time.After(100 * time.Millisecond)
 	}
 
-	<-time.After(4 * time.Second)
 	// Network topology probing phase
-	for i := 0; i < int(peerCount); i++ {
-		p := peers[i]
-		p.Probe()
-		<-time.After(2 * time.Second)
-	}
-
-	<-time.After(4 * time.Second)
-	log.Printf("Waiting for exit signal !")
+	<-time.After(time.Second)
+	peers[0].Probe()
 
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
 
-	<-interruptChan
+	{
+	OUT:
+		for {
+			select {
+			case <-interruptChan:
+				break OUT
+			case <-time.After(time.Second * 4):
+				log.Printf("Waiting for exit signal !")
+			}
+		}
+	}
+
 	cancel()
 	<-time.After(time.Second)
 	// Destroy p2p nodes; export traffic & network structure
