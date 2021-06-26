@@ -14,7 +14,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, count int) error {
+func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, count int, record_1 map[int64]int64, record_2 map[int64]int64) error {
 	if count > len(peers)-1 {
 		return fmt.Errorf("can't make %d neighbours with %d peers", count, len(peers))
 	}
@@ -26,11 +26,21 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 		if n == self {
 			continue
 		}
-		p := peers[n]
-		addrs, err := p.GetAddress()
+		_p := peers[n]
+		addrs, err := _p.GetAddress()
 		if err != nil {
 			return err
 		}
+
+		if v, ok := record_1[p.Id]; ok && v == _p.Id {
+			continue
+		}
+		if v, ok := record_2[p.Id]; ok && v == _p.Id {
+			continue
+		}
+
+		record_1[p.Id] = _p.Id
+		record_2[_p.Id] = p.Id
 		neighbours[addrs[0]] = struct{}{}
 	}
 
@@ -45,8 +55,8 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 }
 
 func main() {
-	var peerCount int64 = 32
-	var neighbourCount int = 4
+	var peerCount int64 = 4
+	var neighbourCount int = 2
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Creating libp2p peers
@@ -77,8 +87,10 @@ func main() {
 
 	<-time.After(time.Second)
 	// Neighbour finding phase
+	record_1 := make(map[int64]int64)
+	record_2 := make(map[int64]int64)
 	for i := 0; i < int(peerCount); i++ {
-		if err := connect(ctx, peers[i], i, peers, neighbourCount); err != nil {
+		if err := connect(ctx, peers[i], i, peers, neighbourCount, record_1, record_2); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
@@ -110,13 +122,13 @@ func main() {
 	// data into log files
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
-		p.Destroy()
 		if err := p.ExportNetwork(); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 		}
 		if err := p.ExportTraffic(); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 		}
+		p.Destroy()
 	}
 	log.Println("Graceful shutdown !")
 }
