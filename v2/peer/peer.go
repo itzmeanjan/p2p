@@ -39,8 +39,6 @@ type Peer struct {
 	WritersLock *sync.RWMutex
 	Network     *simple.UndirectedGraph
 	NetworkLock *sync.RWMutex
-	Traffic     map[int64]*traffic
-	TrafficLock *sync.RWMutex
 }
 
 type traffic struct {
@@ -66,43 +64,35 @@ func (n *node) Attributes() []encoding.Attribute {
 }
 
 type edge struct {
-	simple.Edge
-	attrs []encoding.Attribute
+	simple.WeightedEdge
 }
 
 func (e *edge) Attributes() []encoding.Attribute {
-	return e.attrs
+	return []encoding.Attribute{
+		{Key: "weight", Value: fmt.Sprintf("%f", e.W)},
+	}
 }
 
 func newEdge(frm graph.Node, to graph.Node) *edge {
 	return &edge{
-		Edge: simple.Edge{
+		WeightedEdge: simple.WeightedEdge{
 			F: frm,
 			T: to,
+			W: 0.0,
 		}}
 }
 
-func (p *Peer) UpdateTraffic(dir string, peer int64, amount int) {
-	p.TrafficLock.Lock()
-	defer p.TrafficLock.Unlock()
+func (p *Peer) UpdateTraffic(peer int64, amount int) {
+	p.NetworkLock.Lock()
+	defer p.NetworkLock.Unlock()
 
-	t, ok := p.Traffic[peer]
-	if !ok {
-		t = &traffic{}
-		p.Traffic[peer] = t
-	}
-
-	switch dir {
-	case "in":
-		t.in += amount
-	case "out":
-		t.out += amount
-	}
+	edge := p.Network.Edge(p.Id, peer).(*edge)
+	edge.W += float64(amount)
 }
 
 func (p *Peer) ExportTraffic() error {
-	p.TrafficLock.RLock()
-	defer p.TrafficLock.RUnlock()
+	p.NetworkLock.RLock()
+	defer p.NetworkLock.RUnlock()
 
 	file := fmt.Sprintf("%d.traffic.csv", p.Id)
 	fd, err := os.OpenFile(file, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
@@ -115,8 +105,10 @@ func (p *Peer) ExportTraffic() error {
 		}
 	}()
 
-	for k, v := range p.Traffic {
-		fd.WriteString(fmt.Sprintf("%d; %d; %d; %d\n", p.Id, k, v.in, v.out))
+	edges := p.Network.Edges()
+	for edges.Next() {
+		e := edges.Edge().(*edge)
+		fd.WriteString(fmt.Sprintf("%d; %d; %f\n", e.F.ID(), e.T.ID(), e.W))
 	}
 
 	log.Printf("[%d] Logged network traffic into %s\n", p.Id, file)
@@ -297,8 +289,6 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					log.Printf("Error: %s\n", err.Error())
 					break OUT
 				}
-				p.UpdateTraffic("in", id, n)
-
 				if isFirst {
 					if msg.Kind != "add" {
 						break OUT
@@ -324,6 +314,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					}
 				}
 
+				p.UpdateTraffic(id, n)
 				p.broadcast(msg)
 			}
 		}
@@ -372,7 +363,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 
 	defer func() {
 		if id != 0 {
-			p.UpdateTraffic("out", id, n)
+			p.UpdateTraffic(id, n)
 		}
 	}()
 
@@ -400,7 +391,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 				}
 
 				if id != 0 {
-					p.UpdateTraffic("out", id, n)
+					p.UpdateTraffic(id, n)
 				}
 				log.Printf("[%d] Wrote to %d\n", p.Id, id)
 			}
@@ -436,8 +427,6 @@ func NewPeer(ctx context.Context, id int64, port int) (*Peer, error) {
 		WritersLock: &sync.RWMutex{},
 		Network:     simple.NewUndirectedGraph(),
 		NetworkLock: &sync.RWMutex{},
-		Traffic:     make(map[int64]*traffic),
-		TrafficLock: &sync.RWMutex{},
 	}
 
 	p.HandleStream()

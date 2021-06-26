@@ -45,8 +45,8 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 }
 
 func main() {
-	var peerCount int64 = 32
-	var neighbourCount int = 4
+	var peerCount int64 = 8
+	var neighbourCount int = 2
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Creating libp2p peers
@@ -90,8 +90,11 @@ func main() {
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
 		p.Probe()
-		<-time.After(4 * time.Second)
+		<-time.After(2 * time.Second)
 	}
+
+	<-time.After(4 * time.Second)
+	log.Printf("Waiting for exit signal !")
 
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
@@ -99,6 +102,8 @@ func main() {
 	<-interruptChan
 	cancel()
 	<-time.After(time.Second)
+	// Destroy p2p nodes; export traffic & network structure
+	// data into log files
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
 		p.Destroy()
