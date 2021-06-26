@@ -38,6 +38,14 @@ type Peer struct {
 	Writers     map[int64]chan Message
 	WritersLock *sync.RWMutex
 	Network     *simple.UndirectedGraph
+	NetworkLock *sync.RWMutex
+	Traffic     map[int64]*traffic
+	TrafficLock *sync.RWMutex
+}
+
+type traffic struct {
+	in  int
+	out int
 }
 
 type node struct {
@@ -74,7 +82,51 @@ func newEdge(frm graph.Node, to graph.Node) *edge {
 		}}
 }
 
+func (p *Peer) UpdateTraffic(dir string, peer int64, amount int) {
+	p.TrafficLock.Lock()
+	defer p.TrafficLock.Unlock()
+
+	t, ok := p.Traffic[peer]
+	if !ok {
+		t = &traffic{}
+		p.Traffic[peer] = t
+	}
+
+	switch dir {
+	case "in":
+		t.in += amount
+	case "out":
+		t.out += amount
+	}
+}
+
+func (p *Peer) ExportTraffic() error {
+	p.TrafficLock.RLock()
+	defer p.TrafficLock.RUnlock()
+
+	file := fmt.Sprintf("%d.traffic.csv", p.Id)
+	fd, err := os.OpenFile(file, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := fd.Close(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
+	}()
+
+	for k, v := range p.Traffic {
+		fd.WriteString(fmt.Sprintf("%d; %d; %d; %d\n", p.Id, k, v.in, v.out))
+	}
+
+	log.Printf("[%d] Logged network traffic into %s\n", p.Id, file)
+	return nil
+}
+
 func (p *Peer) InitNetwork(peer int64) {
+	p.NetworkLock.Lock()
+	defer p.NetworkLock.Unlock()
+
 	node_1 := p.Network.Node(p.Id)
 	if node_1 == nil {
 		p.Network.AddNode(&node{
@@ -98,6 +150,9 @@ func (p *Peer) InitNetwork(peer int64) {
 }
 
 func (p *Peer) UpdateNetwork(msg *Message) {
+	p.NetworkLock.Lock()
+	defer p.NetworkLock.Unlock()
+
 	for i := 0; i < len(msg.Hops); i++ {
 		hop := msg.Hops[i]
 		n := p.Network.Node(hop)
@@ -119,6 +174,9 @@ func (p *Peer) UpdateNetwork(msg *Message) {
 }
 
 func (p *Peer) ExportNetwork() error {
+	p.NetworkLock.RLock()
+	defer p.NetworkLock.RUnlock()
+
 	out, err := dot.Marshal(p.Network, fmt.Sprintf("P2P Network viewed by Peer_%d", p.Id), "", "  ")
 	if err != nil {
 		return err
@@ -196,8 +254,8 @@ func (p *Peer) handle(stream network.Stream) {
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 	in := make(chan struct{}, 2)
 	out := make(chan struct{}, 2)
-	writer := make(chan Message, 2)
-	idChan := make(chan int64, 1)
+	writer := make(chan Message, 128)
+	idChan := make(chan int64, 2)
 
 	go p.read(rw, out, in, writer, idChan)
 	go p.write(rw, out, in, writer, idChan)
@@ -234,10 +292,13 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 
 			default:
 				msg := new(Message)
-				if _, err := msg.Read(rw); err != nil {
+				n, err := msg.Read(rw)
+				if err != nil {
 					log.Printf("Error: %s\n", err.Error())
 					break OUT
 				}
+				p.UpdateTraffic("in", id, n)
+
 				if isFirst {
 					if msg.Kind != "add" {
 						break OUT
@@ -270,8 +331,8 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 }
 
 func (p *Peer) broadcast(msg *Message) {
-	p.WritersLock.Lock()
-	defer p.WritersLock.Unlock()
+	p.WritersLock.RLock()
+	defer p.WritersLock.RUnlock()
 
 	for id, ping := range p.Writers {
 		if id == msg.Author {
@@ -302,11 +363,19 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 	}()
 
 	msg := Message{Author: p.Id, Kind: "add"}
-	if _, err := msg.Write(rw); err != nil {
+	n, err := msg.Write(rw)
+	if err != nil {
 		log.Printf("Error: %s\n", err.Error())
 		return
 	}
-	id := <-idChan
+	var id int64
+
+	defer func() {
+		if id != 0 {
+			p.UpdateTraffic("out", id, n)
+		}
+	}()
+
 	{
 	OUT:
 		for {
@@ -317,13 +386,21 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 			case <-in:
 				break OUT
 
+			case _id := <-idChan:
+				id = _id
+
 			case msg := <-writer:
 				if msg.Kind == "probe" {
 					msg.Hops = append(msg.Hops, p.Id)
 				}
-				if _, err := msg.Write(rw); err != nil {
+				n, err := msg.Write(rw)
+				if err != nil {
 					log.Printf("Error: %s\n", err.Error())
 					break OUT
+				}
+
+				if id != 0 {
+					p.UpdateTraffic("out", id, n)
 				}
 				log.Printf("[%d] Wrote to %d\n", p.Id, id)
 			}
@@ -358,6 +435,9 @@ func NewPeer(ctx context.Context, id int64, port int) (*Peer, error) {
 		Writers:     make(map[int64]chan Message),
 		WritersLock: &sync.RWMutex{},
 		Network:     simple.NewUndirectedGraph(),
+		NetworkLock: &sync.RWMutex{},
+		Traffic:     make(map[int64]*traffic),
+		TrafficLock: &sync.RWMutex{},
 	}
 
 	p.HandleStream()

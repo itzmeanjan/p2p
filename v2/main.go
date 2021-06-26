@@ -38,16 +38,18 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 		if err := p.Connect(ctx, n); err != nil {
 			return err
 		}
+		<-time.After(time.Second)
 	}
 
 	return nil
 }
 
 func main() {
-	var peerCount int64 = 8
-	var neighbourCount int = 2
+	var peerCount int64 = 32
+	var neighbourCount int = 4
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Creating libp2p peers
 	peers := make([]*peer.Peer, 0, peerCount)
 	var i int64
 	for ; i < peerCount; i++ {
@@ -60,6 +62,7 @@ func main() {
 	}
 
 	peer.InitContext(ctx)
+	// Displaying peer listen addresses
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
 		addrs, err := p.GetAddress()
@@ -73,14 +76,17 @@ func main() {
 	}
 
 	<-time.After(time.Second)
+	// Neighbour finding phase
 	for i := 0; i < int(peerCount); i++ {
 		if err := connect(ctx, peers[i], i, peers, neighbourCount); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
+		<-time.After(time.Second)
 	}
 
 	<-time.After(4 * time.Second)
+	// Network topology probing phase
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
 		p.Probe()
@@ -96,7 +102,12 @@ func main() {
 	for i := 0; i < int(peerCount); i++ {
 		p := peers[i]
 		p.Destroy()
-		p.ExportNetwork()
+		if err := p.ExportNetwork(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
+		if err := p.ExportTraffic(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
 	}
 	log.Println("Graceful shutdown !")
 }
