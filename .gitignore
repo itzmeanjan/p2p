@@ -17,7 +17,6 @@
 p2p-circle
 p2p-mesh
 p2p-starfish
-*.txt
 __pycache__
 venv
 v2_node

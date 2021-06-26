@@ -26,6 +26,7 @@ run_v2: build_v2
 
 gen_graph:
 	find . -maxdepth 1 -name '*.dot' | xargs dot -Tpng -s144 -O
+	pushd v2/scripts; python3 traffic.py; popd
 
 remove_graph:
 	find . -maxdepth 1 -name '*.dot' | xargs rm -v
