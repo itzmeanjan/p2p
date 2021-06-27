@@ -23,17 +23,11 @@ def get_file_paths(root: str) -> List[str]:
 def read(file: str, df: DataFrame) -> DataFrame:
     def is_added(self_id: int, peer_id: int) -> bool:
         yes = False
-        for (frm, to, _) in df.values:
+        for (frm, to, _, _, _) in df.values:
             if (frm == self_id and to == peer_id) or (frm == peer_id and to == self_id):
                 yes = True
                 break
         return yes
-
-    def num(n: str):
-        try:
-            return int(n)
-        except ValueError:
-            return int(float(n))
 
     buf = []
     with open(file, 'r') as fd:
@@ -41,13 +35,15 @@ def read(file: str, df: DataFrame) -> DataFrame:
             ln = fd.readline()
             if not ln:
                 break
-            [self_id, peer_id, total] = [
-                num(i.strip()) for i in ln.split(";")]
-            if total < 1 or is_added(self_id, peer_id):
+            [self_id, peer_id, add_cost, del_cost, probe_cost] = [
+                int(i.strip()) for i in ln.split(";")]
+            if (add_cost == 0 and del_cost == 0 and probe_cost == 0) or is_added(self_id, peer_id):
                 continue
             buf.append({"from": self_id,
                         "to": peer_id,
-                       "total": total})
+                       "add_cost": add_cost,
+                        "del_cost": del_cost,
+                        "probe_cost": probe_cost})
     df = df.append(buf)
     return df
 
@@ -58,24 +54,25 @@ def read_all(root: str) -> DataFrame:
         df = read(p, df)
 
     df = df.reset_index(drop=True)
-    z = zip(df['from'].values, df['to'].values, df['total'].values)
-    return DataFrame([{"edge": f'{i[0]} <-> {i[1]}', "data": i[2]} for i in z])
+    z = zip(df['from'].values, df['to'].values, df['add_cost'].values,
+            df['del_cost'].values, df['probe_cost'].values)
+    return DataFrame([{"edge": f'{i[0]} <-> {i[1]}', "add_cost": i[2], "del_cost": i[3], "probe_cost": i[4]} for i in z])
 
 
-def plot(df: DataFrame) -> bool:
+def plot(df: DataFrame, kind: str, title: str) -> bool:
     try:
         with plt.style.context('dark_background'):
             fig = plt.Figure(figsize=(16, 9), dpi=100)
-            g = sns.barplot(x='edge', y='data', data=df, ax=fig.gca())
+            g = sns.barplot(x='edge', y=kind, data=df, ax=fig.gca())
             g.set(xticklabels=[])
             g.set(xlabel=None)
             g.tick_params(bottom=False)
             fig.gca().set_ylabel('Data over Wire ( in bytes )', labelpad=12)
-            fig.suptitle('Total Data over Wire',
+            fig.suptitle(title,
                          fontsize=16, y=1)
 
             fig.savefig(
-                'traffic.png',
+                f'{kind}_v2.png',
                 bbox_inches='tight',
                 pad_inches=.5)
             plt.close(fig)
@@ -87,10 +84,15 @@ def plot(df: DataFrame) -> bool:
 
 def main():
     print('Processing traffic log ...')
-    if plot(read_all("../..")):
-        print('Generated plot !')
-    else:
-        print('Failed !')
+    df = read_all("../..")
+    for (kind, title) in [('add_cost', 'Cost to Communicate Edge Addition'),
+                          ('del_cost', 'Cost to Communicate Edge Deletion'),
+                          ('probe_cost', 'Cost to Communicate Probing Request')]:
+        if plot(df, kind, title):
+            print(f'[{kind}] Generated plot !')
+        else:
+            print(f'[{kind}] Failed !')
+            return
 
 
 if __name__ == '__main__':

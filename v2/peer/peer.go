@@ -59,25 +59,27 @@ func (n *node) Attributes() []encoding.Attribute {
 }
 
 type edge struct {
-	simple.WeightedEdge
+	simple.Edge
+	Add   int64
+	Del   int64
+	Probe int64
 }
 
 func (e *edge) Attributes() []encoding.Attribute {
 	return []encoding.Attribute{
-		{Key: "weight", Value: fmt.Sprintf("%f", e.W)},
+		{Key: "weight", Value: fmt.Sprintf("%f", float64(e.Add+e.Del+e.Probe))},
 	}
 }
 
 func newEdge(frm graph.Node, to graph.Node) *edge {
 	return &edge{
-		WeightedEdge: simple.WeightedEdge{
+		Edge: simple.Edge{
 			F: frm,
 			T: to,
-			W: 0.0,
 		}}
 }
 
-func (p *Peer) UpdateTraffic(peer int64, amount int) {
+func (p *Peer) UpdateTraffic(peer int64, kind string, amount int) {
 	p.NetworkLock.Lock()
 	defer p.NetworkLock.Unlock()
 
@@ -86,7 +88,14 @@ func (p *Peer) UpdateTraffic(peer int64, amount int) {
 		return
 	}
 	_e := e.(*edge)
-	_e.W += float64(amount)
+	switch kind {
+	case "add":
+		_e.Add += int64(amount)
+	case "del":
+		_e.Del += int64(amount)
+	case "probe":
+		_e.Probe += int64(amount)
+	}
 }
 
 func (p *Peer) ExportTraffic() error {
@@ -107,7 +116,7 @@ func (p *Peer) ExportTraffic() error {
 	edges := p.Network.Edges()
 	for edges.Next() {
 		e := edges.Edge().(*edge)
-		fd.WriteString(fmt.Sprintf("%d; %d; %f\n", e.F.ID(), e.T.ID(), e.W))
+		fd.WriteString(fmt.Sprintf("%d; %d; %d; %d; %d\n", e.F.ID(), e.T.ID(), e.Add, e.Del, e.Probe))
 	}
 
 	log.Printf("[%d] Logged network traffic into %s\n", p.Id, file)
@@ -158,41 +167,29 @@ func (p *Peer) UpdateNetwork(msg *Message) {
 	for i := 0; i < len(msg.Hops)-1; i++ {
 		hop_1 := msg.Hops[i]
 		hop_2 := msg.Hops[i+1]
+
+		if msg.Kind == "del" {
+			if (hop_1 == msg.Author && hop_2 == msg.Peer) || (hop_1 == msg.Peer && hop_2 == msg.Author) {
+				continue
+			}
+		}
+
 		if !p.Network.HasEdgeBetween(hop_1, hop_2) {
 			p.Network.SetEdge(newEdge(p.Network.Node(hop_1), p.Network.Node(hop_2)))
 		}
-	}
-}
-
-func (p *Peer) UpdateNetworkWithNonProbingMessage(msg *Message) {
-	p.NetworkLock.Lock()
-
-	if n := p.Network.Node(msg.Author); n == nil {
-		p.Network.AddNode(&node{
-			Node: simple.Node(msg.Author),
-			attrs: []encoding.Attribute{
-				{Key: "style", Value: "filled"}}})
-	}
-
-	if n := p.Network.Node(msg.Peer); n == nil {
-		p.Network.AddNode(&node{
-			Node: simple.Node(msg.Peer),
-			attrs: []encoding.Attribute{
-				{Key: "style", Value: "filled"}}})
 	}
 
 	if msg.Kind == "add" {
 		if !p.Network.HasEdgeBetween(msg.Author, msg.Peer) {
 			p.Network.SetEdge(newEdge(p.Network.Node(msg.Author), p.Network.Node(msg.Peer)))
 		}
-	} else {
+	}
+
+	if msg.Kind == "del" {
 		if p.Network.HasEdgeBetween(msg.Author, msg.Peer) {
 			p.Network.RemoveEdge(msg.Author, msg.Peer)
 		}
 	}
-
-	p.NetworkLock.Unlock()
-	p.UpdateNetwork(msg)
 }
 
 func (p *Peer) ExportNetwork() error {
@@ -294,7 +291,7 @@ func (p *Peer) handle(stream network.Stream) {
 		log.Printf("Error: %s\n", err.Error())
 	}
 
-	msg := Message{Author: p.Id, Kind: "del", Peer: id}
+	msg := Message{Author: p.Id, Kind: "del", Peer: id, Hops: []int64{}}
 	p.broadcast_all(&msg)
 }
 
@@ -341,12 +338,8 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					log.Printf("[%d] Received from %d: %v\n", p.Id, id, msg)
 				}
 
-				if msg.Kind == "probe" {
-					p.UpdateNetwork(msg)
-				} else {
-					p.UpdateNetworkWithNonProbingMessage(msg)
-				}
-				p.UpdateTraffic(id, n)
+				p.UpdateNetwork(msg)
+				p.UpdateTraffic(id, msg.Kind, n)
 				p.broadcast(msg)
 			}
 		}
@@ -364,6 +357,10 @@ func (p *Peer) broadcast_all(msg *Message) {
 
 func (p *Peer) broadcast(msg *Message) {
 	if msg.Author == p.Id {
+		return
+	}
+
+	if msg.Kind == "del" && msg.Peer == p.Id {
 		return
 	}
 
@@ -417,7 +414,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 
 	defer func() {
 		if id != 0 {
-			p.UpdateTraffic(id, mL)
+			p.UpdateTraffic(id, "add", mL)
 		}
 	}()
 
@@ -443,7 +440,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 				}
 
 				if id != 0 {
-					p.UpdateTraffic(id, n)
+					p.UpdateTraffic(id, msg.Kind, n)
 				}
 				log.Printf("[%d] Wrote to %d\n", p.Id, id)
 			}

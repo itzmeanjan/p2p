@@ -68,7 +68,7 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 
 func main() {
 	var peerCount int64 = 32
-	var neighbourCount int = 2
+	var makeNeighbourCount int = 2
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Creating libp2p peers
@@ -103,7 +103,7 @@ func main() {
 	// Neighbour finding phase
 	record := make(map[int64]map[int64]struct{})
 	for i := 0; i < int(peerCount); i++ {
-		if err := connect(ctx, peers[i], i, peers, neighbourCount, record); err != nil {
+		if err := connect(ctx, peers[i], i, peers, makeNeighbourCount, record); err != nil {
 			log.Printf("Error: %s\n", err.Error())
 			return
 		}
