@@ -166,7 +166,6 @@ func (p *Peer) UpdateNetwork(msg *Message) {
 
 func (p *Peer) UpdateNetworkWithNonProbingMessage(msg *Message) {
 	p.NetworkLock.Lock()
-	defer p.NetworkLock.Unlock()
 
 	if n := p.Network.Node(msg.Author); n == nil {
 		p.Network.AddNode(&node{
@@ -191,6 +190,9 @@ func (p *Peer) UpdateNetworkWithNonProbingMessage(msg *Message) {
 			p.Network.RemoveEdge(msg.Author, msg.Peer)
 		}
 	}
+
+	p.NetworkLock.Unlock()
+	p.UpdateNetwork(msg)
 }
 
 func (p *Peer) ExportNetwork() error {
@@ -336,18 +338,16 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					p.InitNetwork(id)
 					log.Printf("[%d] Connected to %d\n", p.Id, id)
 				} else {
-					log.Printf("[%d] Received from %d\n", p.Id, id)
+					log.Printf("[%d] Received from %d: %v\n", p.Id, id, msg)
 				}
-
-				p.UpdateTraffic(id, n)
 
 				if msg.Kind == "probe" {
 					p.UpdateNetwork(msg)
-					p.broadcast(msg)
 				} else {
 					p.UpdateNetworkWithNonProbingMessage(msg)
-					p.broadcast_change(msg, id)
 				}
+				p.UpdateTraffic(id, n)
+				p.broadcast(msg)
 			}
 		}
 	}
@@ -362,36 +362,26 @@ func (p *Peer) broadcast_all(msg *Message) {
 	}
 }
 
-func (p *Peer) broadcast_change(msg *Message, frm int64) {
-	if msg.Author == p.Id {
-		return
-	}
-
-	p.WritersLock.RLock()
-	defer p.WritersLock.RUnlock()
-
-	for id, ping := range p.Writers {
-		if id == frm {
-			continue
-		}
-		if msg.Author == id || msg.Peer == id {
-			continue
-		}
-
-		ping <- *msg
-	}
-}
-
 func (p *Peer) broadcast(msg *Message) {
 	if msg.Author == p.Id {
 		return
 	}
 
+	// Message has already hopped over this peer
+	for _, hop := range msg.Hops {
+		if hop == p.Id {
+			return
+		}
+	}
+
 	p.WritersLock.RLock()
 	defer p.WritersLock.RUnlock()
 
+	// Peer from which message is received i.e.
+	// most recent hop
+	receivedFrom := msg.Hops[len(msg.Hops)-1]
 	for id, ping := range p.Writers {
-		if msg.Hops[len(msg.Hops)-1] == id {
+		if receivedFrom == id {
 			continue
 		}
 
@@ -406,11 +396,9 @@ func (p *Peer) broadcast(msg *Message) {
 				break
 			}
 		}
-		if traversed {
-			continue
+		if !traversed {
+			ping <- *msg
 		}
-
-		ping <- *msg
 	}
 }
 
@@ -419,7 +407,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 		out <- struct{}{}
 	}()
 
-	msg := Message{Author: p.Id, Kind: "add"}
+	msg := Message{Author: p.Id, Kind: "add", Hops: []int64{p.Id}}
 	mL, err := msg.Write(rw)
 	if err != nil {
 		log.Printf("Error: %s\n", err.Error())
@@ -447,9 +435,7 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 				id = _id
 
 			case msg := <-writer:
-				if msg.Kind == "probe" {
-					msg.Hops = append(msg.Hops, p.Id)
-				}
+				msg.Hops = append(msg.Hops, p.Id)
 				n, err := msg.Write(rw)
 				if err != nil {
 					log.Printf("Error: %s\n", err.Error())
