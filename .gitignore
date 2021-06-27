@@ -20,3 +20,5 @@ p2p-starfish
 __pycache__
 venv
 v2_node
+*.dot.png
+*_cost_v2.png
