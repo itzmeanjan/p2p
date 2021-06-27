@@ -66,8 +66,36 @@ func connect(ctx context.Context, p *peer.Peer, self int, peers []*peer.Peer, co
 	return nil
 }
 
+func pickRandomPeer(neighbourhood map[int64]map[int64]struct{}, peer int64) int64 {
+	n := neighbourhood[peer]
+	var _peer int64
+	for p := range n {
+		_peer = p
+		break
+	}
+
+	// delete peer entry from record, because this
+	// connection is going to be dropped ( as part of
+	// simulation )
+	delete(neighbourhood[peer], _peer)
+	delete(neighbourhood[_peer], peer)
+	return _peer
+}
+
+func exportNetwork(peers []*peer.Peer) {
+	for i := 0; i < len(peers); i++ {
+		p := peers[i]
+		if err := p.ExportNetwork(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
+		if err := p.ExportTraffic(); err != nil {
+			log.Printf("Error: %s\n", err.Error())
+		}
+	}
+}
+
 func main() {
-	var peerCount int64 = 32
+	var peerCount int64 = 7
 	var makeNeighbourCount int = 2
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -118,26 +146,54 @@ func main() {
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
 
 	{
-	OUT:
+	OUT_1:
 		for {
 			select {
 			case <-interruptChan:
-				break OUT
+				exportNetwork(peers)
+
+				p := peers[0]
+				p.Disconnect(pickRandomPeer(record, p.Id))
+				break OUT_1
+
 			case <-time.After(time.Second * 4):
-				log.Printf("Waiting for exit signal !")
+				log.Printf("Waiting for disconnection signal !")
+
 			}
 		}
 	}
 
-	// Export traffic & network structure
-	// data into log files
-	for i := 0; i < int(peerCount); i++ {
-		p := peers[i]
-		if err := p.ExportNetwork(); err != nil {
-			log.Printf("Error: %s\n", err.Error())
+	{
+	OUT_2:
+		for {
+			select {
+			case <-interruptChan:
+				exportNetwork(peers)
+
+				p := peers[0]
+				connect(ctx, p, 0, peers, 1, record)
+				break OUT_2
+
+			case <-time.After(time.Second * 4):
+				log.Printf("Waiting for connection signal !")
+
+			}
 		}
-		if err := p.ExportTraffic(); err != nil {
-			log.Printf("Error: %s\n", err.Error())
+	}
+
+	{
+	OUT_3:
+		for {
+			select {
+			case <-interruptChan:
+				exportNetwork(peers)
+
+				break OUT_3
+
+			case <-time.After(time.Second * 4):
+				log.Printf("Waiting for exit signal !")
+
+			}
 		}
 	}
 

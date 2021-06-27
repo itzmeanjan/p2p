@@ -35,10 +35,24 @@ func InitContext(ctx context.Context) {
 type Peer struct {
 	Id          int64
 	Host        host.Host
-	Writers     map[int64]chan Message
+	Writers     map[int64]Writer
 	WritersLock *sync.RWMutex
-	Network     *simple.UndirectedGraph
+	Network     *network_graph
 	NetworkLock *sync.RWMutex
+}
+
+type Writer struct {
+	Listen chan Message
+	Signal chan struct{}
+}
+
+type network_graph struct {
+	*simple.UndirectedGraph
+	attrs []encoding.Attribute
+}
+
+func (n *network_graph) Attributes() []encoding.Attribute {
+	return n.attrs
 }
 
 type node struct {
@@ -102,7 +116,7 @@ func (p *Peer) ExportTraffic() error {
 	p.NetworkLock.RLock()
 	defer p.NetworkLock.RUnlock()
 
-	file := fmt.Sprintf("%d.traffic.csv", p.Id)
+	file := fmt.Sprintf("%d_%d.cost.csv", p.Id, time.Now().Unix())
 	fd, err := os.OpenFile(file, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -265,6 +279,14 @@ func (p *Peer) Connect(ctx context.Context, addr multiaddr.Multiaddr) error {
 	return nil
 }
 
+func (p *Peer) Disconnect(peer int64) {
+	p.WritersLock.RLock()
+	defer p.WritersLock.RUnlock()
+
+	wr := p.Writers[peer]
+	wr.Signal <- struct{}{}
+}
+
 func (p *Peer) HandleStream() {
 	p.Host.SetStreamHandler(protocol.ID("/v2/p2p/simulation"), p.handle)
 }
@@ -274,17 +296,18 @@ func (p *Peer) handle(stream network.Stream) {
 	in := make(chan struct{}, 2)
 	out := make(chan struct{}, 2)
 	writer := make(chan Message, 128)
+	break_signal := make(chan struct{})
 	idChan := make(chan int64, 2)
 
-	go p.read(rw, out, in, writer, idChan)
-	go p.write(rw, out, in, writer, idChan)
+	go p.read(rw, out, in, writer, break_signal, idChan)
+	go p.write(rw, out, in, writer, break_signal, idChan)
 
 	id := <-idChan
 	out <- <-in
 
 	p.WritersLock.Lock()
-	defer p.WritersLock.Unlock()
 	delete(p.Writers, id)
+	p.WritersLock.Unlock()
 	log.Printf("[%d] Disconnected from %d\n", p.Id, id)
 
 	if err := stream.Close(); err != nil {
@@ -295,7 +318,7 @@ func (p *Peer) handle(stream network.Stream) {
 	p.broadcast_all(&msg)
 }
 
-func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, idChan chan int64) {
+func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, break_signal chan struct{}, idChan chan int64) {
 	defer func() {
 		out <- struct{}{}
 	}()
@@ -326,7 +349,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 
 					msg.Peer = p.Id
 					p.WritersLock.Lock()
-					p.Writers[msg.Author] = writer
+					p.Writers[msg.Author] = Writer{writer, break_signal}
 					p.WritersLock.Unlock()
 					isFirst = false
 					id = msg.Author
@@ -335,7 +358,7 @@ func (p *Peer) read(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, w
 					p.InitNetwork(id)
 					log.Printf("[%d] Connected to %d\n", p.Id, id)
 				} else {
-					log.Printf("[%d] Received from %d: %v\n", p.Id, id, msg)
+					log.Printf("[%d] Received from %d\n", p.Id, id)
 				}
 
 				p.UpdateNetwork(msg)
@@ -350,8 +373,8 @@ func (p *Peer) broadcast_all(msg *Message) {
 	p.WritersLock.RLock()
 	defer p.WritersLock.RUnlock()
 
-	for _, ping := range p.Writers {
-		ping <- *msg
+	for _, wr := range p.Writers {
+		wr.Listen <- *msg
 	}
 }
 
@@ -377,7 +400,7 @@ func (p *Peer) broadcast(msg *Message) {
 	// Peer from which message is received i.e.
 	// most recent hop
 	receivedFrom := msg.Hops[len(msg.Hops)-1]
-	for id, ping := range p.Writers {
+	for id, wr := range p.Writers {
 		if receivedFrom == id {
 			continue
 		}
@@ -394,12 +417,12 @@ func (p *Peer) broadcast(msg *Message) {
 			}
 		}
 		if !traversed {
-			ping <- *msg
+			wr.Listen <- *msg
 		}
 	}
 }
 
-func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, idChan chan int64) {
+func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, writer chan Message, break_signal chan struct{}, idChan chan int64) {
 	defer func() {
 		out <- struct{}{}
 	}()
@@ -443,6 +466,13 @@ func (p *Peer) write(rw *bufio.ReadWriter, in chan struct{}, out chan struct{}, 
 					p.UpdateTraffic(id, msg.Kind, n)
 				}
 				log.Printf("[%d] Wrote to %d\n", p.Id, id)
+
+			case <-break_signal:
+				// For simulating network disconnection
+				// and inspecting flow of `del` message
+				// i.e. edge deletion message
+				break OUT
+
 			}
 		}
 	}
@@ -472,9 +502,13 @@ func NewPeer(ctx context.Context, id int64, port int) (*Peer, error) {
 	p := Peer{
 		Id:          id,
 		Host:        host,
-		Writers:     make(map[int64]chan Message),
+		Writers:     make(map[int64]Writer),
 		WritersLock: &sync.RWMutex{},
-		Network:     simple.NewUndirectedGraph(),
+		Network: &network_graph{
+			UndirectedGraph: simple.NewUndirectedGraph(),
+			attrs: []encoding.Attribute{
+				{Key: "label", Value: fmt.Sprintf("View of Peer_%d", id)},
+			}},
 		NetworkLock: &sync.RWMutex{},
 	}
 
