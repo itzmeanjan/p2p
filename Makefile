@@ -34,4 +34,4 @@ remove_graph:
 
 remove_log:
 	find . -maxdepth 1 -name '*.dot' | xargs rm -v
-	find . -maxdepth 1 -name '*.csv' | xargs rm -v
+	find . -maxdepth 1 -name '*.cost.csv' | xargs rm -v
