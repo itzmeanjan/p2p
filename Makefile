@@ -30,8 +30,8 @@ gen_graph:
 	mv v2/scripts/traffic.png cost_v2.png
 
 remove_graph:
-	find . -maxdepth 1 -name '*.dot' | xargs rm -v
 	find . -maxdepth 1 -name '*.png' | xargs rm -v
 
 remove_log:
+	find . -maxdepth 1 -name '*.dot' | xargs rm -v
 	find . -maxdepth 1 -name '*.csv' | xargs rm -v
