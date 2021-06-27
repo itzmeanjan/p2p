@@ -46,6 +46,7 @@ def read(file: str, df: DataFrame) -> DataFrame:
                 int(i.strip()) for i in ln.split(";")]
             yes, idx = is_added(self_id, peer_id)
             if yes:
+                update_df(idx, add_cost, del_cost, probe_cost)
                 continue
             buf.append({"from": self_id,
                         "to": peer_id,
