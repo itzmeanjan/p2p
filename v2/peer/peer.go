@@ -93,6 +93,19 @@ func newEdge(frm graph.Node, to graph.Node) *edge {
 		}}
 }
 
+func (p *Peer) ClearTraffic() {
+	p.NetworkLock.RLock()
+	defer p.NetworkLock.RUnlock()
+
+	edges := p.Network.Edges()
+	for edges.Next() {
+		e := edges.Edge().(*edge)
+		e.Add = 0
+		e.Del = 0
+		e.Probe = 0
+	}
+}
+
 func (p *Peer) UpdateTraffic(peer int64, kind string, amount int) {
 	p.NetworkLock.Lock()
 	defer p.NetworkLock.Unlock()

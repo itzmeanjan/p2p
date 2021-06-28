@@ -94,6 +94,12 @@ func exportNetwork(peers []*peer.Peer) {
 	}
 }
 
+func clearTraffic(peers []*peer.Peer) {
+	for _, p := range peers {
+		p.ClearTraffic()
+	}
+}
+
 func main() {
 	var peerCount int64 = 7
 	var makeNeighbourCount int = 2
@@ -138,13 +144,28 @@ func main() {
 		<-time.After(100 * time.Millisecond)
 	}
 
-	// Network topology probing phase
-	<-time.After(time.Second)
-	peers[0].Probe()
-
 	interruptChan := make(chan os.Signal, 1)
 	signal.Notify(interruptChan, syscall.SIGTERM, syscall.SIGINT)
 
+	// Probing Phase
+	{
+	OUT_0:
+		for {
+			select {
+			case <-interruptChan:
+				clearTraffic(peers)
+				p := peers[0]
+				p.Probe()
+				break OUT_0
+
+			case <-time.After(time.Second * 4):
+				log.Printf("Waiting for network probing signal !")
+
+			}
+		}
+	}
+
+	// Disconnection ( link failure ) Phase
 	{
 	OUT_1:
 		for {
@@ -163,6 +184,7 @@ func main() {
 		}
 	}
 
+	// Connection Phase
 	{
 	OUT_2:
 		for {
@@ -181,6 +203,7 @@ func main() {
 		}
 	}
 
+	// Termination
 	{
 	OUT_3:
 		for {
